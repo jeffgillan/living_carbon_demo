@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Biomass Explorer — Map</title>
+
+    <!-- MapLibre GL JS -->
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css">
+    <script src="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js"></script>
+
+    <!-- Mapbox GL Draw (compatible with MapLibre) -->
+    <link rel="stylesheet" href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.5.0/dist/mapbox-gl-draw.css">
+    <script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.5.0/dist/mapbox-gl-draw.js"></script>
+
+    <!-- geotiff.js -->
+    <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+
+    <!-- Turf.js -->
+    <script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        html, body, #map { height: 100%; width: 100%; }
+
+        #control-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 300px;
+            background: rgba(255, 255, 255, 0.92);
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+            padding: 16px;
+            z-index: 1;
+            max-height: calc(100vh - 20px);
+            overflow-y: auto;
+        }
+        #control-panel h3 {
+            font-size: 1.1rem;
+            margin-bottom: 12px;
+            color: #1a1a1a;
+        }
+        .control-section {
+            margin-bottom: 14px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .control-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+        label input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+        }
+        .upload-label {
+            display: block;
+            font-size: 0.85rem;
+            color: #555;
+            margin-bottom: 6px;
+        }
+        input[type="file"] {
+            font-size: 0.85rem;
+            width: 100%;
+        }
+        button {
+            padding: 8px 16px;
+            background: #e74c3c;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover { background: #c0392b; }
+        #results {
+            display: none;
+        }
+        #results h4 {
+            font-size: 0.95rem;
+            margin-bottom: 8px;
+            color: #1a1a1a;
+        }
+        #results p {
+            font-size: 0.85rem;
+            margin-bottom: 4px;
+            color: #333;
+        }
+        .loading {
+            color: #888;
+            font-style: italic;
+        }
+        #legend {
+            display: none;
+            margin-top: 8px;
+        }
+        .back-link {
+            display: inline-block;
+            font-size: 0.8rem;
+            color: #555;
+            text-decoration: none;
+            margin-bottom: 10px;
+        }
+        .back-link:hover { color: #222; }
+
+        /* MapLibre GL Draw cursor fixes for MapLibre compatibility */
+        .maplibregl-canvas-container.mouse-pointer .maplibregl-canvas {
+            cursor: pointer;
+        }
+        .maplibregl-canvas-container.mouse-add .maplibregl-canvas {
+            cursor: crosshair;
+        }
+        .maplibregl-canvas-container.mouse-move .maplibregl-canvas {
+            cursor: move;
+        }
+        .maplibregl-canvas-container.mouse-drag .maplibregl-canvas {
+            cursor: grab;
+        }
+        .maplibregl-canvas-container.mouse-rotate .maplibregl-canvas {
+            cursor: crosshair;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <div id="control-panel">
+        <a href="index.html" class="back-link">&larr; Back</a>
+        <h3>Biomass Explorer</h3>
+
+        <div class="control-section">
+            <label>
+                <input type="checkbox" id="biomass-toggle">
+                Show Biomass Layer
+            </label>
+            <div id="cog-loading" style="display:none; font-size:0.8rem; color:#888; margin-top:4px;">Loading raster...</div>
+            <div id="legend"></div>
+        </div>
+
+        <div class="control-section">
+            <span class="upload-label">Upload GeoJSON polygon:</span>
+            <input type="file" id="geojson-upload" accept=".geojson,.json">
+        </div>
+
+        <div class="control-section" id="results">
+            <h4>Results</h4>
+            <div id="results-content"></div>
+        </div>
+
+        <div class="control-section">
+            <button id="clear-btn">Clear</button>
+        </div>
+    </div>
+
+    <script>
+    // ============================================================
+    // CONFIGURATION
+    // ============================================================
+    const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/peloncillo_DEM.tif';
+    const NODATA_VALUE = -9999;
+    const MAP_CENTER = [-109.04711, 31.53078];
+    const MAP_ZOOM = 10;
+
+    // ============================================================
+    // GLOBAL STATE
+    // ============================================================
+    let cogImage = null;
+    let cogMetadata = null;
+    let cogLayerAdded = false;
+    let currentPolygon = null;
+    let draw = null;
+
+    // ============================================================
+    // MAP INITIALIZATION
+    // ============================================================
+    const map = new maplibregl.Map({
+        container: 'map',
+        style: {
+            version: 8,
+            sources: {
+                'esri-imagery': {
+                    type: 'raster',
+                    tiles: [
+                        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                    ],
+                    tileSize: 256,
+                    attribution: 'Tiles &copy; Esri'
+                }
+            },
+            layers: [{
+                id: 'esri-imagery-layer',
+                type: 'raster',
+                source: 'esri-imagery'
+            }]
+        },
+        center: MAP_CENTER,
+        zoom: MAP_ZOOM
+    });
+
+    map.addControl(new maplibregl.NavigationControl(), 'bottom-left');
+
+    // ============================================================
+    // DRAW TOOL SETUP
+    // ============================================================
+    map.on('load', function () {
+        // Override MapboxDraw class constants for MapLibre compatibility
+        MapboxDraw.constants.classes.CANVAS = 'maplibregl-canvas';
+        MapboxDraw.constants.classes.CONTROL_BASE = 'maplibregl-ctrl';
+        MapboxDraw.constants.classes.CONTROL_PREFIX = 'maplibregl-ctrl-';
+        MapboxDraw.constants.classes.CONTROL_GROUP = 'maplibregl-ctrl-group';
+        MapboxDraw.constants.classes.ATTRIBUTION = 'maplibregl-ctrl-attrib';
+
+        draw = new MapboxDraw({
+            displayControlsDefault: false,
+            controls: {
+                polygon: true,
+                trash: true
+            }
+        });
+        map.addControl(draw, 'top-left');
+
+        map.on('draw.create', handleDrawCreate);
+        map.on('draw.update', handleDrawUpdate);
+        map.on('draw.delete', handleDrawDelete);
+    });
+
+    function handleDrawCreate(e) {
+        // Enforce single polygon: if more than one feature, keep only the latest
+        var allFeatures = draw.getAll();
+        if (allFeatures.features.length > 1) {
+            // Delete all but the latest drawn feature
+            var latestId = e.features[0].id;
+            allFeatures.features.forEach(function (f) {
+                if (f.id !== latestId) draw.delete(f.id);
+            });
+        }
+        // Remove any uploaded polygon layer
+        removeUploadedPolygonFromMap();
+        var polygon = e.features[0];
+        currentPolygon = polygon;
+        calculateBiomass(polygon);
+    }
+
+    function handleDrawUpdate(e) {
+        var polygon = e.features[0];
+        currentPolygon = polygon;
+        calculateBiomass(polygon);
+    }
+
+    function handleDrawDelete() {
+        currentPolygon = null;
+        clearResults();
+    }
+
+    // ============================================================
+    // GEOJSON UPLOAD
+    // ============================================================
+    document.getElementById('geojson-upload').addEventListener('change', function (event) {
+        var file = event.target.files[0];
+        if (!file) return;
+
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            try {
+                var geojson = JSON.parse(e.target.result);
+                var polygon = validateGeoJSON(geojson);
+                if (!polygon) {
+                    alert('Invalid GeoJSON: must contain a Polygon or MultiPolygon geometry.');
+                    return;
+                }
+                // Clear drawn polygons
+                if (draw) draw.deleteAll();
+                // Remove previous uploaded polygon
+                removeUploadedPolygonFromMap();
+
+                currentPolygon = polygon;
+                addUploadedPolygonToMap(polygon);
+
+                // Fit map to polygon
+                var bbox = turf.bbox(polygon);
+                map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50 });
+
+                calculateBiomass(polygon);
+            } catch (err) {
+                alert('Error reading GeoJSON file: ' + err.message);
+            }
+        };
+        reader.readAsText(file);
+    });
+
+    function validateGeoJSON(geojson) {
+        var geometry = null;
+
+        if (geojson.type === 'FeatureCollection' && geojson.features) {
+            for (var i = 0; i < geojson.features.length; i++) {
+                var g = geojson.features[i].geometry;
+                if (g && (g.type === 'Polygon' || g.type === 'MultiPolygon')) {
+                    geometry = g;
+                    break;
+                }
+            }
+        } else if (geojson.type === 'Feature' && geojson.geometry) {
+            if (geojson.geometry.type === 'Polygon' || geojson.geometry.type === 'MultiPolygon') {
+                geometry = geojson.geometry;
+            }
+        } else if (geojson.type === 'Polygon' || geojson.type === 'MultiPolygon') {
+            geometry = geojson;
+        }
+
+        if (!geometry) return null;
+
+        // Normalize to a Feature
+        return { type: 'Feature', geometry: geometry, properties: {} };
+    }
+
+    // ============================================================
+    // POLYGON DISPLAY (uploaded polygons only; draw tool handles its own)
+    // ============================================================
+    function addUploadedPolygonToMap(polygon) {
+        map.addSource('uploaded-polygon', {
+            type: 'geojson',
+            data: polygon
+        });
+        map.addLayer({
+            id: 'uploaded-polygon-fill',
+            type: 'fill',
+            source: 'uploaded-polygon',
+            paint: {
+                'fill-color': '#3388ff',
+                'fill-opacity': 0.2
+            }
+        });
+        map.addLayer({
+            id: 'uploaded-polygon-outline',
+            type: 'line',
+            source: 'uploaded-polygon',
+            paint: {
+                'line-color': '#3388ff',
+                'line-width': 2
+            }
+        });
+    }
+
+    function removeUploadedPolygonFromMap() {
+        if (map.getLayer('uploaded-polygon-fill')) map.removeLayer('uploaded-polygon-fill');
+        if (map.getLayer('uploaded-polygon-outline')) map.removeLayer('uploaded-polygon-outline');
+        if (map.getSource('uploaded-polygon')) map.removeSource('uploaded-polygon');
+    }
+
+    // ============================================================
+    // COG LAYER VISUALIZATION
+    // ============================================================
+    document.getElementById('biomass-toggle').addEventListener('change', function (e) {
+        toggleBiomassLayer(e.target.checked);
+    });
+
+    async function toggleBiomassLayer(visible) {
+        if (visible) {
+            if (cogLayerAdded) {
+                map.setLayoutProperty('biomass-layer', 'visibility', 'visible');
+                document.getElementById('legend').style.display = 'block';
+                return;
+            }
+            // Load and render the COG
+            document.getElementById('cog-loading').style.display = 'block';
+            try {
+                var result = await loadAndRenderCOG();
+                var bbox = result.bbox; // [west, south, east, north]
+
+                map.addSource('biomass-raster', {
+                    type: 'image',
+                    url: result.dataUrl,
+                    coordinates: [
+                        [bbox[0], bbox[3]], // top-left
+                        [bbox[2], bbox[3]], // top-right
+                        [bbox[2], bbox[1]], // bottom-right
+                        [bbox[0], bbox[1]]  // bottom-left
+                    ]
+                });
+                map.addLayer({
+                    id: 'biomass-layer',
+                    type: 'raster',
+                    source: 'biomass-raster',
+                    paint: { 'raster-opacity': 0.7 }
+                });
+                cogLayerAdded = true;
+
+                createLegend(result.min, result.max);
+                document.getElementById('legend').style.display = 'block';
+            } catch (err) {
+                alert('Error loading biomass layer: ' + err.message);
+                document.getElementById('biomass-toggle').checked = false;
+            }
+            document.getElementById('cog-loading').style.display = 'none';
+        } else {
+            if (cogLayerAdded) {
+                map.setLayoutProperty('biomass-layer', 'visibility', 'none');
+            }
+            document.getElementById('legend').style.display = 'none';
+        }
+    }
+
+    async function loadAndRenderCOG() {
+        var tiff = await GeoTIFF.fromUrl(COG_URL);
+        var image = await tiff.getImage();
+
+        var bbox = image.getBoundingBox(); // [west, south, east, north]
+        var width = image.getWidth();
+        var height = image.getHeight();
+
+        // Cache metadata for calculations
+        cogImage = image;
+        cogMetadata = {
+            bbox: bbox,
+            origin: image.getOrigin(),
+            resolution: image.getResolution(),
+            width: width,
+            height: height
+        };
+
+        // Read raster data for visualization
+        var rasters = await image.readRasters();
+        var data = rasters[0];
+
+        // Compute min/max excluding nodata
+        var min = Infinity, max = -Infinity;
+        for (var i = 0; i < data.length; i++) {
+            var v = data[i];
+            if (v !== NODATA_VALUE && !isNaN(v)) {
+                if (v < min) min = v;
+                if (v > max) max = v;
+            }
+        }
+
+        // Render to canvas
+        var canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        var ctx = canvas.getContext('2d');
+        var imgData = ctx.createImageData(width, height);
+
+        for (var i = 0; i < data.length; i++) {
+            var v = data[i];
+            var offset = i * 4;
+            if (v === NODATA_VALUE || isNaN(v)) {
+                imgData.data[offset] = 0;
+                imgData.data[offset + 1] = 0;
+                imgData.data[offset + 2] = 0;
+                imgData.data[offset + 3] = 0; // transparent
+            } else {
+                var t = (max > min) ? (v - min) / (max - min) : 0;
+                imgData.data[offset] = Math.round(240 - t * 200);     // R: 240 → 40
+                imgData.data[offset + 1] = Math.round(248 - t * 100); // G: 248 → 148
+                imgData.data[offset + 2] = Math.round(200 - t * 180); // B: 200 → 20
+                imgData.data[offset + 3] = 180;
+            }
+        }
+        ctx.putImageData(imgData, 0, 0);
+
+        return {
+            dataUrl: canvas.toDataURL(),
+            bbox: bbox,
+            min: min,
+            max: max
+        };
+    }
+
+    function createLegend(min, max) {
+        var legend = document.getElementById('legend');
+        legend.innerHTML =
+            '<p style="margin-bottom:4px;font-size:0.8rem;font-weight:600;">Biomass</p>' +
+            '<div style="display:flex;align-items:center;">' +
+                '<span style="font-size:0.75rem;">' + min.toFixed(0) + '</span>' +
+                '<div style="flex:1;height:12px;margin:0 6px;background:linear-gradient(to right, #f0f8c8, #2d8c2d);border-radius:2px;"></div>' +
+                '<span style="font-size:0.75rem;">' + max.toFixed(0) + '</span>' +
+            '</div>';
+    }
+
+    // ============================================================
+    // BIOMASS CALCULATION — ZONAL SUM
+    // ============================================================
+    async function calculateBiomass(polygon) {
+        showLoading();
+
+        try {
+            // Ensure COG metadata is loaded
+            if (!cogImage) {
+                var tiff = await GeoTIFF.fromUrl(COG_URL);
+                cogImage = await tiff.getImage();
+                cogMetadata = {
+                    bbox: cogImage.getBoundingBox(),
+                    origin: cogImage.getOrigin(),
+                    resolution: cogImage.getResolution(),
+                    width: cogImage.getWidth(),
+                    height: cogImage.getHeight()
+                };
+            }
+
+            var polyBbox = turf.bbox(polygon); // [minLng, minLat, maxLng, maxLat]
+            var origin = cogMetadata.origin;       // [originX, originY]
+            var res = cogMetadata.resolution;      // [resX, resY] (resY is negative)
+
+            // Convert geo bbox to pixel coordinates
+            var px0 = Math.floor((polyBbox[0] - origin[0]) / res[0]);
+            var py0 = Math.floor((polyBbox[3] - origin[1]) / res[1]);
+            var px1 = Math.ceil((polyBbox[2] - origin[0]) / res[0]);
+            var py1 = Math.ceil((polyBbox[1] - origin[1]) / res[1]);
+
+            // Clamp to image bounds
+            px0 = Math.max(0, px0);
+            py0 = Math.max(0, py0);
+            px1 = Math.min(cogMetadata.width, px1);
+            py1 = Math.min(cogMetadata.height, py1);
+
+            if (px0 >= px1 || py0 >= py1) {
+                displayError('The polygon does not overlap with the biomass raster.');
+                return;
+            }
+
+            // Read pixels within the window
+            var rasters = await cogImage.readRasters({
+                window: [px0, py0, px1, py1]
+            });
+            var data = rasters[0];
+            var windowWidth = px1 - px0;
+            var windowHeight = py1 - py0;
+
+            // Iterate pixels, check point-in-polygon
+            var totalBiomass = 0;
+            var pixelCount = 0;
+
+            for (var row = 0; row < windowHeight; row++) {
+                for (var col = 0; col < windowWidth; col++) {
+                    var idx = row * windowWidth + col;
+                    var value = data[idx];
+
+                    if (value === NODATA_VALUE || isNaN(value)) continue;
+
+                    var lng = origin[0] + (px0 + col + 0.5) * res[0];
+                    var lat = origin[1] + (py0 + row + 0.5) * res[1];
+
+                    var point = turf.point([lng, lat]);
+                    if (turf.booleanPointInPolygon(point, polygon)) {
+                        totalBiomass += value;
+                        pixelCount++;
+                    }
+                }
+            }
+
+            if (pixelCount === 0) {
+                displayError('No valid biomass pixels found within the polygon.');
+                return;
+            }
+
+            var area = turf.area(polygon); // square meters
+            displayResults(totalBiomass, pixelCount, area);
+        } catch (err) {
+            console.error('Biomass calculation error:', err);
+            displayError('Calculation error: ' + err.message);
+        }
+    }
+
+    // ============================================================
+    // RESULTS DISPLAY
+    // ============================================================
+    function showLoading() {
+        var results = document.getElementById('results');
+        results.style.display = 'block';
+        document.getElementById('results-content').innerHTML = '<p class="loading">Calculating...</p>';
+    }
+
+    function displayResults(totalBiomass, pixelCount, area) {
+        var results = document.getElementById('results');
+        results.style.display = 'block';
+        document.getElementById('results-content').innerHTML =
+            '<p><strong>Total Biomass:</strong> ' + formatNumber(totalBiomass.toFixed(2)) + '</p>' +
+            '<p><strong>Pixels Summed:</strong> ' + formatNumber(pixelCount) + '</p>' +
+            '<p><strong>Polygon Area:</strong> ' + formatNumber((area / 10000).toFixed(2)) + ' ha</p>';
+    }
+
+    function displayError(msg) {
+        var results = document.getElementById('results');
+        results.style.display = 'block';
+        document.getElementById('results-content').innerHTML = '<p style="color:#c0392b;">' + msg + '</p>';
+    }
+
+    function clearResults() {
+        document.getElementById('results').style.display = 'none';
+        document.getElementById('results-content').innerHTML = '';
+    }
+
+    function formatNumber(num) {
+        return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    // ============================================================
+    // CLEAR / RESET
+    // ============================================================
+    document.getElementById('clear-btn').addEventListener('click', clearAll);
+
+    function clearAll() {
+        removeUploadedPolygonFromMap();
+        if (draw) draw.deleteAll();
+        clearResults();
+        document.getElementById('geojson-upload').value = '';
+        currentPolygon = null;
+    }
+    </script>
+</body>
+</html>
