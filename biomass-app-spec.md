@@ -74,7 +74,7 @@ Configure this as a MapLibre raster source and layer. Set the map's initial view
 - **Toggle**: A checkbox in the control panel labeled "Show Biomass Layer"
 - **Implementation**: Use geotiff.js to read the COG and render it as a canvas overlay or as a MapLibre image source. The COG URL will be provided as a configurable variable at the top of the script (placeholder for now):
   ```javascript
-  const COG_URL = 'https://your-cyverse-url/path/to/biomass.tif';
+  const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/peloncillo_DEM.tif';
   ```
 - **Visualization**: Render biomass values with a color ramp (e.g., green gradient — low biomass = light green, high biomass = dark green). Include a simple legend on the map or in the control panel showing the color scale.
 - **Important**: The COG must be in **EPSG:4326** (WGS84 geographic coordinates) for simplicity, since GeoJSON uses lat/lon by default. If reprojection is needed, note it but keep the app expecting 4326.
