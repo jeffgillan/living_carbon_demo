@@ -4,7 +4,11 @@ A lightweight, client-side web application for visualizing biomass raster data o
 
 **[Live Demo](https://jeffgillan.github.io/living_carbon_demo/)**
 
+<br>
+
 ---
+
+<br>
 
 ## Application Architecture
 
@@ -35,8 +39,11 @@ flowchart TB
     CDN -->|"delivers JS libraries"| Browser
     geotiff -->|"HTTP Range requests"| cog
 ```
+<br>
 
 ---
+
+<br>
 
 ## Repository Structure
 
@@ -51,7 +58,11 @@ living_carbon_demo/
 
 The map application is a **single HTML file** (`map.html`) containing all markup, styles, and JavaScript. There is no build step, no bundler, and no `node_modules` — all third-party libraries are loaded at runtime from CDNs.
 
+<br>
+
 ---
+
+<br>
 
 ## Technology Stack
 
@@ -68,7 +79,11 @@ All libraries are loaded via `<script>` and `<link>` tags directly from Content 
 | [geotiff.js](https://geotiffjs.github.io/) | 2.1.3 | `cdn.jsdelivr.net/npm/geotiff` | Reading Cloud Optimized GeoTIFF pixel data via HTTP range requests |
 | [Turf.js](https://turfjs.org/) | 7.x | `unpkg.com/@turf/turf` | Spatial operations: bounding box, point-in-polygon, area calculation |
 
+<br>
+
 ---
+
+<br>
 
 ## How It Works
 
@@ -109,7 +124,11 @@ sequenceDiagram
 4. **Zonal calculation** reads only the full-resolution pixels within the polygon's bounding box, tests each pixel center for containment, and sums the valid values
 5. **Results display** shows total biomass, number of pixels summed, and polygon area in hectares
 
+<br>
+
 ---
+
+<br>
 
 ## Biomass Data Layer
 
@@ -157,7 +176,11 @@ https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/se_ariz
 
 The COG must be in **EPSG:4326** (WGS84 geographic coordinates) to align with GeoJSON polygons and the web map.
 
+<br>
+
 ---
+
+<br>
 
 ## Local Development
 
@@ -177,7 +200,11 @@ python3 -m http.server 8000
 
 Press `Ctrl+C` to stop the server.
 
+<br>
+
 ---
+
+<br>
 
 ## Deployment
 
@@ -197,7 +224,11 @@ git push origin main
 
 GitHub Pages will automatically rebuild and serve the updated files.
 
+<br>
+
 ---
+
+<br>
 
 ## License
 
