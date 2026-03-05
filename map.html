@@ -179,9 +179,16 @@
     // ============================================================
     // GLOBAL STATE
     // ============================================================
+    let cogTiff = null;
     let cogImage = null;
     let cogMetadata = null;
+    let cogOverviews = [];     // [{img, width, height, resX}] sorted coarsest-first
+    let cogInitialized = false;
     let cogLayerAdded = false;
+    let biomassLayerVisible = false;
+    let globalMin = 0;
+    let globalMax = 1;
+    let renderTimeout = null;
     let currentPolygon = null;
     let draw = null;
 
@@ -443,50 +450,40 @@
     }
 
     // ============================================================
-    // COG LAYER VISUALIZATION
+    // COG LAYER VISUALIZATION — VIEWPORT-BASED DYNAMIC RENDERING
     // ============================================================
     document.getElementById('biomass-toggle').addEventListener('change', function (e) {
         toggleBiomassLayer(e.target.checked);
     });
 
+    // Debounced moveend listener for dynamic re-rendering
+    map.on('moveend', function () {
+        if (!biomassLayerVisible) return;
+        clearTimeout(renderTimeout);
+        renderTimeout = setTimeout(function () { renderViewport(); }, 200);
+    });
+
     async function toggleBiomassLayer(visible) {
+        biomassLayerVisible = visible;
         if (visible) {
+            if (!cogInitialized) {
+                document.getElementById('cog-loading').style.display = 'block';
+                try {
+                    await initCOG();
+                } catch (err) {
+                    alert('Error loading biomass data: ' + err.message);
+                    document.getElementById('biomass-toggle').checked = false;
+                    biomassLayerVisible = false;
+                    document.getElementById('cog-loading').style.display = 'none';
+                    return;
+                }
+                document.getElementById('cog-loading').style.display = 'none';
+            }
             if (cogLayerAdded) {
                 map.setLayoutProperty('biomass-layer', 'visibility', 'visible');
-                document.getElementById('legend').style.display = 'block';
-                return;
             }
-            // Load and render the COG
-            document.getElementById('cog-loading').style.display = 'block';
-            try {
-                var result = await loadAndRenderCOG();
-                var bbox = result.bbox; // [west, south, east, north]
-
-                map.addSource('biomass-raster', {
-                    type: 'image',
-                    url: result.dataUrl,
-                    coordinates: [
-                        [bbox[0], bbox[3]], // top-left
-                        [bbox[2], bbox[3]], // top-right
-                        [bbox[2], bbox[1]], // bottom-right
-                        [bbox[0], bbox[1]]  // bottom-left
-                    ]
-                });
-                map.addLayer({
-                    id: 'biomass-layer',
-                    type: 'raster',
-                    source: 'biomass-raster',
-                    paint: { 'raster-opacity': 0.7 }
-                });
-                cogLayerAdded = true;
-
-                createLegend(result.min, result.max);
-                document.getElementById('legend').style.display = 'block';
-            } catch (err) {
-                alert('Error loading biomass layer: ' + err.message);
-                document.getElementById('biomass-toggle').checked = false;
-            }
-            document.getElementById('cog-loading').style.display = 'none';
+            document.getElementById('legend').style.display = 'block';
+            renderViewport();
         } else {
             if (cogLayerAdded) {
                 map.setLayoutProperty('biomass-layer', 'visibility', 'none');
@@ -495,24 +492,19 @@
         }
     }
 
-    async function loadAndRenderCOG() {
-        var tiff = await GeoTIFF.fromUrl(COG_URL);
-
-        // Get full-res image for metadata only (no pixel read)
-        var fullImage = await tiff.getImage();
-        var bbox = fullImage.getBoundingBox(); // [west, south, east, north]
-
-        // Auto-detect nodata from TIFF metadata
+    // Initialize COG: open tiff, cache metadata, catalog overviews, compute global min/max
+    async function initCOG() {
+        cogTiff = await GeoTIFF.fromUrl(COG_URL);
+        var fullImage = await cogTiff.getImage();
+        var bbox = fullImage.getBoundingBox();
         var gdalNodata = fullImage.getGDALNoData();
         var nodata = (gdalNodata !== null) ? gdalNodata : NODATA_VALUE;
 
-        console.log('=== COG DIAGNOSTICS ===');
+        console.log('=== COG INIT ===');
         console.log('Full-res:', fullImage.getWidth(), 'x', fullImage.getHeight());
         console.log('BBox:', bbox);
-        console.log('GDAL nodata from metadata:', gdalNodata);
-        console.log('Using nodata:', nodata);
+        console.log('Nodata:', nodata);
 
-        // Cache full-res metadata for biomass calculations
         cogImage = fullImage;
         cogMetadata = {
             bbox: bbox,
@@ -523,105 +515,193 @@
             nodata: nodata
         };
 
-        // Find a suitable overview for visualization
-        var imageCount = await tiff.getImageCount();
+        // Catalog all overview levels (including full-res as index 0)
+        var imageCount = await cogTiff.getImageCount();
         var fullWidth = fullImage.getWidth();
         var fullSpp = fullImage.getSamplesPerPixel();
-        console.log('Image count:', imageCount, '| Full-res SPP:', fullSpp);
+        var allImages = [];
 
-        // Log all IFDs
-        var candidates = [];
-        for (var i = 0; i < imageCount; i++) {
-            var img = await tiff.getImage(i);
-            var w = img.getWidth();
-            var h = img.getHeight();
-            var spp = img.getSamplesPerPixel();
-            var subfileType = img.fileDirectory.NewSubfileType;
-            console.log('  IFD', i, ':', w, 'x', h, '| spp:', spp, '| NewSubfileType:', subfileType);
-            // Collect candidate overviews: smaller than full-res, matching band count
-            if (i > 0 && w < fullWidth && spp === fullSpp) {
-                candidates.push({ index: i, img: img, width: w, height: h, subfileType: subfileType });
+        // Full-res image
+        var fullRes = fullImage.getResolution();
+        allImages.push({
+            img: fullImage,
+            width: fullImage.getWidth(),
+            height: fullImage.getHeight(),
+            resX: Math.abs(fullRes[0])
+        });
+
+        // Overviews — compute resolution from full-res ratio (overviews lack own geo transform)
+        var fullResX = Math.abs(fullRes[0]);
+        for (var i = 1; i < imageCount; i++) {
+            var img = await cogTiff.getImage(i);
+            if (img.getWidth() < fullWidth && img.getSamplesPerPixel() === fullSpp) {
+                var ovResX = fullResX * (fullWidth / img.getWidth());
+                allImages.push({
+                    img: img,
+                    width: img.getWidth(),
+                    height: img.getHeight(),
+                    resX: ovResX
+                });
+                console.log('  Overview:', img.getWidth(), 'x', img.getHeight(), '| res:', ovResX.toFixed(6));
             }
         }
+        // Sort by resolution: coarsest (largest resX) first, finest last
+        allImages.sort(function (a, b) { return b.resX - a.resX; });
+        cogOverviews = allImages;
 
-        // Pick display image: prefer smallest candidate <= 2048px
-        var displayImage = fullImage;
-        var selectedIndex = 0;
-        // Sort candidates by width descending (largest overview first, smallest last)
-        candidates.sort(function(a, b) { return a.width - b.width; });
-        for (var c = 0; c < candidates.length; c++) {
-            if (candidates[c].width <= 2048) {
-                displayImage = candidates[c].img;
-                selectedIndex = candidates[c].index;
-                break;
-            }
-        }
-        // If none <= 2048, pick the smallest candidate
-        if (displayImage === fullImage && candidates.length > 0) {
-            displayImage = candidates[0].img;
-            selectedIndex = candidates[0].index;
-        }
-
-        var width = displayImage.getWidth();
-        var height = displayImage.getHeight();
-        console.log('Selected IFD', selectedIndex, ':', width, 'x', height,
-            (displayImage === fullImage ? '(WARNING: using full-res!)' : ''));
-
-        var rasters = await displayImage.readRasters();
+        // Compute global min/max from the smallest (coarsest) overview for consistent color scaling
+        var smallest = allImages[0]; // coarsest overview
+        var rasters = await smallest.img.readRasters();
         var data = rasters[0];
-        console.log('Raster data type:', data.constructor.name, '| length:', data.length);
-
-        // Compute min/max excluding nodata
         var min = Infinity, max = -Infinity;
-        var validCount = 0;
-        var nanCount = 0;
-        var nodataCount = 0;
         for (var i = 0; i < data.length; i++) {
             var v = data[i];
-            if (isNaN(v)) { nanCount++; continue; }
-            if (v === nodata) { nodataCount++; continue; }
-            validCount++;
+            if (isNaN(v) || v === nodata) continue;
             if (v < min) min = v;
             if (v > max) max = v;
         }
-        console.log('Pixel stats — valid:', validCount, '| nodata:', nodataCount, '| NaN:', nanCount, '| total:', data.length);
-        console.log('Value range — min:', min, 'max:', max);
+        globalMin = min;
+        globalMax = max;
+        console.log('Global value range:', min, '—', max);
+        console.log('Overview levels:', allImages.length);
+        console.log('=== END COG INIT ===');
+
+        createLegend(globalMin, globalMax);
+        cogInitialized = true;
+    }
+
+    // Render the COG for the current map viewport
+    async function renderViewport() {
+        if (!cogInitialized || !biomassLayerVisible) return;
+
+        var bounds = map.getBounds();
+        var west = bounds.getWest();
+        var south = bounds.getSouth();
+        var east = bounds.getEast();
+        var north = bounds.getNorth();
+        var cogBbox = cogMetadata.bbox; // [west, south, east, north]
+
+        // Intersect viewport with COG extent
+        var iWest = Math.max(west, cogBbox[0]);
+        var iSouth = Math.max(south, cogBbox[1]);
+        var iEast = Math.min(east, cogBbox[2]);
+        var iNorth = Math.min(north, cogBbox[3]);
+
+        if (iWest >= iEast || iSouth >= iNorth) {
+            // No overlap — hide layer if showing
+            if (cogLayerAdded) {
+                map.setLayoutProperty('biomass-layer', 'visibility', 'none');
+            }
+            return;
+        }
+
+        // Determine desired resolution: match viewport pixel density, cap canvas at 1024px
+        var viewportGeoWidth = iEast - iWest;
+        var canvasPixelWidth = Math.min(map.getCanvas().width, 1024);
+        var desiredRes = viewportGeoWidth / canvasPixelWidth;
+
+        // Pick the best overview: finest resolution that is >= desiredRes (not oversampling)
+        var bestImage = cogOverviews[0]; // start with coarsest
+        for (var i = 0; i < cogOverviews.length; i++) {
+            if (cogOverviews[i].resX <= desiredRes) {
+                bestImage = cogOverviews[i];
+                break;
+            }
+        }
+        // If all overviews are finer than desired, use the coarsest
+        // (already set as default above)
+
+        var img = bestImage.img;
+        // Use full-res origin; compute overview resolution from full-res ratio
+        var imgOrigin = cogMetadata.origin;
+        var fullRes = cogMetadata.resolution;
+        var scaleX = cogMetadata.width / bestImage.width;
+        var scaleY = cogMetadata.height / bestImage.height;
+        var imgRes = [fullRes[0] * scaleX, fullRes[1] * scaleY];
+        var imgWidth = bestImage.width;
+        var imgHeight = bestImage.height;
+
+        // Convert intersection bbox to pixel coordinates in this overview
+        var px0 = Math.floor((iWest - imgOrigin[0]) / imgRes[0]);
+        var py0 = Math.floor((iNorth - imgOrigin[1]) / imgRes[1]);
+        var px1 = Math.ceil((iEast - imgOrigin[0]) / imgRes[0]);
+        var py1 = Math.ceil((iSouth - imgOrigin[1]) / imgRes[1]);
+
+        // Clamp to image bounds
+        px0 = Math.max(0, px0);
+        py0 = Math.max(0, py0);
+        px1 = Math.min(imgWidth, px1);
+        py1 = Math.min(imgHeight, py1);
+
+        if (px0 >= px1 || py0 >= py1) return;
+
+        // Compute the actual geo bounds of the clamped pixel window
+        var renderWest = imgOrigin[0] + px0 * imgRes[0];
+        var renderNorth = imgOrigin[1] + py0 * imgRes[1];
+        var renderEast = imgOrigin[0] + px1 * imgRes[0];
+        var renderSouth = imgOrigin[1] + py1 * imgRes[1];
+
+        // Read pixels for this window
+        var rasters = await img.readRasters({ window: [px0, py0, px1, py1] });
+        var data = rasters[0];
+        var w = px1 - px0;
+        var h = py1 - py0;
+        var nodata = cogMetadata.nodata;
 
         // Render to canvas
         var canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = w;
+        canvas.height = h;
         var ctx = canvas.getContext('2d');
-        var imgData = ctx.createImageData(width, height);
+        var imgData = ctx.createImageData(w, h);
 
         for (var i = 0; i < data.length; i++) {
             var v = data[i];
-            var offset = i * 4;
+            var off = i * 4;
             if (isNaN(v) || v === nodata) {
-                imgData.data[offset] = 0;
-                imgData.data[offset + 1] = 0;
-                imgData.data[offset + 2] = 0;
-                imgData.data[offset + 3] = 0; // transparent
+                imgData.data[off] = 0;
+                imgData.data[off + 1] = 0;
+                imgData.data[off + 2] = 0;
+                imgData.data[off + 3] = 0;
             } else {
-                var t = (max > min) ? (v - min) / (max - min) : 0;
-                imgData.data[offset] = Math.round(240 - t * 200);     // R: 240 → 40
-                imgData.data[offset + 1] = Math.round(248 - t * 100); // G: 248 → 148
-                imgData.data[offset + 2] = Math.round(200 - t * 180); // B: 200 → 20
-                imgData.data[offset + 3] = 180;
+                var t = (globalMax > globalMin) ? (v - globalMin) / (globalMax - globalMin) : 0;
+                t = Math.max(0, Math.min(1, t));
+                imgData.data[off] = Math.round(240 - t * 200);
+                imgData.data[off + 1] = Math.round(248 - t * 100);
+                imgData.data[off + 2] = Math.round(200 - t * 180);
+                imgData.data[off + 3] = 180;
             }
         }
         ctx.putImageData(imgData, 0, 0);
-
         var dataUrl = canvas.toDataURL();
-        console.log('DataURL length:', dataUrl.length);
-        console.log('=== END COG DIAGNOSTICS ===');
 
-        return {
-            dataUrl: dataUrl,
-            bbox: bbox,
-            min: min,
-            max: max
-        };
+        var coordinates = [
+            [renderWest, renderNorth],  // top-left
+            [renderEast, renderNorth],  // top-right
+            [renderEast, renderSouth],  // bottom-right
+            [renderWest, renderSouth]   // bottom-left
+        ];
+
+        if (!cogLayerAdded) {
+            map.addSource('biomass-raster', {
+                type: 'image',
+                url: dataUrl,
+                coordinates: coordinates
+            });
+            map.addLayer({
+                id: 'biomass-layer',
+                type: 'raster',
+                source: 'biomass-raster',
+                paint: { 'raster-opacity': 0.7 }
+            });
+            cogLayerAdded = true;
+        } else {
+            map.getSource('biomass-raster').updateImage({
+                url: dataUrl,
+                coordinates: coordinates
+            });
+            map.setLayoutProperty('biomass-layer', 'visibility', 'visible');
+        }
     }
 
     function createLegend(min, max) {
