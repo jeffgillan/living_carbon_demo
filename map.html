@@ -169,10 +169,12 @@
     // ============================================================
     // CONFIGURATION
     // ============================================================
-    const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/peloncillo_DEM.tif';
+    // const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/peloncillo_DEM.tif';
+    const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/se_arizona_dem.tif';
+
     const NODATA_VALUE = -9999;
     const MAP_CENTER = [-109.04711, 31.53078];
-    const MAP_ZOOM = 10;
+    const MAP_ZOOM = 12;
 
     // ============================================================
     // GLOBAL STATE
@@ -228,7 +230,87 @@
             controls: {
                 polygon: true,
                 trash: true
-            }
+            },
+            styles: [
+                // Polygon fill — semi-transparent dark gray
+                {
+                    id: 'gl-draw-polygon-fill-inactive',
+                    type: 'fill',
+                    filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']],
+                    paint: { 'fill-color': '#333333', 'fill-opacity': 0.3 }
+                },
+                {
+                    id: 'gl-draw-polygon-fill-active',
+                    type: 'fill',
+                    filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']],
+                    paint: { 'fill-color': '#333333', 'fill-opacity': 0.3 }
+                },
+                // Polygon outline — dark gray
+                {
+                    id: 'gl-draw-polygon-stroke-inactive',
+                    type: 'line',
+                    filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']],
+                    paint: { 'line-color': '#333333', 'line-width': 2 }
+                },
+                {
+                    id: 'gl-draw-polygon-stroke-active',
+                    type: 'line',
+                    filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']],
+                    paint: { 'line-color': '#333333', 'line-width': 2 }
+                },
+                // Midpoints
+                {
+                    id: 'gl-draw-polygon-midpoint',
+                    type: 'circle',
+                    filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']],
+                    paint: { 'circle-radius': 4, 'circle-color': '#555555' }
+                },
+                // Vertices
+                {
+                    id: 'gl-draw-point-point-stroke-inactive',
+                    type: 'circle',
+                    filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']],
+                    paint: { 'circle-radius': 5, 'circle-opacity': 1, 'circle-color': '#fff', 'circle-stroke-width': 2, 'circle-stroke-color': '#333333' }
+                },
+                {
+                    id: 'gl-draw-point-inactive',
+                    type: 'circle',
+                    filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']],
+                    paint: { 'circle-radius': 3, 'circle-color': '#333333' }
+                },
+                {
+                    id: 'gl-draw-point-active',
+                    type: 'circle',
+                    filter: ['all', ['==', '$type', 'Point'], ['!=', 'meta', 'midpoint'], ['==', 'active', 'true']],
+                    paint: { 'circle-radius': 6, 'circle-color': '#fff', 'circle-stroke-width': 2, 'circle-stroke-color': '#333333' }
+                },
+                // Line while drawing
+                {
+                    id: 'gl-draw-line-inactive',
+                    type: 'line',
+                    filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'LineString'], ['!=', 'mode', 'static']],
+                    paint: { 'line-color': '#333333', 'line-width': 2 }
+                },
+                {
+                    id: 'gl-draw-line-active',
+                    type: 'line',
+                    filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']],
+                    paint: { 'line-color': '#333333', 'line-width': 2, 'line-dasharray': [0.2, 2] }
+                },
+                // Vertex stroke (for halos on active vertices)
+                {
+                    id: 'gl-draw-polygon-and-line-vertex-stroke-inactive',
+                    type: 'circle',
+                    filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']],
+                    paint: { 'circle-radius': 6, 'circle-color': '#fff' }
+                },
+                {
+                    id: 'gl-draw-polygon-and-line-vertex-inactive',
+                    type: 'circle',
+                    filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']],
+                    paint: { 'circle-radius': 4, 'circle-color': '#333333' }
+                }
+            ]
         });
         map.addControl(draw, 'top-left');
 
@@ -415,35 +497,95 @@
 
     async function loadAndRenderCOG() {
         var tiff = await GeoTIFF.fromUrl(COG_URL);
-        var image = await tiff.getImage();
 
-        var bbox = image.getBoundingBox(); // [west, south, east, north]
-        var width = image.getWidth();
-        var height = image.getHeight();
+        // Get full-res image for metadata only (no pixel read)
+        var fullImage = await tiff.getImage();
+        var bbox = fullImage.getBoundingBox(); // [west, south, east, north]
 
-        // Cache metadata for calculations
-        cogImage = image;
+        // Auto-detect nodata from TIFF metadata
+        var gdalNodata = fullImage.getGDALNoData();
+        var nodata = (gdalNodata !== null) ? gdalNodata : NODATA_VALUE;
+
+        console.log('=== COG DIAGNOSTICS ===');
+        console.log('Full-res:', fullImage.getWidth(), 'x', fullImage.getHeight());
+        console.log('BBox:', bbox);
+        console.log('GDAL nodata from metadata:', gdalNodata);
+        console.log('Using nodata:', nodata);
+
+        // Cache full-res metadata for biomass calculations
+        cogImage = fullImage;
         cogMetadata = {
             bbox: bbox,
-            origin: image.getOrigin(),
-            resolution: image.getResolution(),
-            width: width,
-            height: height
+            origin: fullImage.getOrigin(),
+            resolution: fullImage.getResolution(),
+            width: fullImage.getWidth(),
+            height: fullImage.getHeight(),
+            nodata: nodata
         };
 
-        // Read raster data for visualization
-        var rasters = await image.readRasters();
+        // Find a suitable overview for visualization
+        var imageCount = await tiff.getImageCount();
+        var fullWidth = fullImage.getWidth();
+        var fullSpp = fullImage.getSamplesPerPixel();
+        console.log('Image count:', imageCount, '| Full-res SPP:', fullSpp);
+
+        // Log all IFDs
+        var candidates = [];
+        for (var i = 0; i < imageCount; i++) {
+            var img = await tiff.getImage(i);
+            var w = img.getWidth();
+            var h = img.getHeight();
+            var spp = img.getSamplesPerPixel();
+            var subfileType = img.fileDirectory.NewSubfileType;
+            console.log('  IFD', i, ':', w, 'x', h, '| spp:', spp, '| NewSubfileType:', subfileType);
+            // Collect candidate overviews: smaller than full-res, matching band count
+            if (i > 0 && w < fullWidth && spp === fullSpp) {
+                candidates.push({ index: i, img: img, width: w, height: h, subfileType: subfileType });
+            }
+        }
+
+        // Pick display image: prefer smallest candidate <= 2048px
+        var displayImage = fullImage;
+        var selectedIndex = 0;
+        // Sort candidates by width descending (largest overview first, smallest last)
+        candidates.sort(function(a, b) { return a.width - b.width; });
+        for (var c = 0; c < candidates.length; c++) {
+            if (candidates[c].width <= 2048) {
+                displayImage = candidates[c].img;
+                selectedIndex = candidates[c].index;
+                break;
+            }
+        }
+        // If none <= 2048, pick the smallest candidate
+        if (displayImage === fullImage && candidates.length > 0) {
+            displayImage = candidates[0].img;
+            selectedIndex = candidates[0].index;
+        }
+
+        var width = displayImage.getWidth();
+        var height = displayImage.getHeight();
+        console.log('Selected IFD', selectedIndex, ':', width, 'x', height,
+            (displayImage === fullImage ? '(WARNING: using full-res!)' : ''));
+
+        var rasters = await displayImage.readRasters();
         var data = rasters[0];
+        console.log('Raster data type:', data.constructor.name, '| length:', data.length);
 
         // Compute min/max excluding nodata
         var min = Infinity, max = -Infinity;
+        var validCount = 0;
+        var nanCount = 0;
+        var nodataCount = 0;
         for (var i = 0; i < data.length; i++) {
             var v = data[i];
-            if (v !== NODATA_VALUE && !isNaN(v)) {
-                if (v < min) min = v;
-                if (v > max) max = v;
-            }
+            if (isNaN(v)) { nanCount++; continue; }
+            if (v === nodata) { nodataCount++; continue; }
+            validCount++;
+            if (v < min) min = v;
+            if (v > max) max = v;
         }
+        console.log('Pixel stats — valid:', validCount, '| nodata:', nodataCount, '| NaN:', nanCount, '| total:', data.length);
+        console.log('Value range — min:', min, 'max:', max);
 
         // Render to canvas
         var canvas = document.createElement('canvas');
@@ -455,7 +597,7 @@
         for (var i = 0; i < data.length; i++) {
             var v = data[i];
             var offset = i * 4;
-            if (v === NODATA_VALUE || isNaN(v)) {
+            if (isNaN(v) || v === nodata) {
                 imgData.data[offset] = 0;
                 imgData.data[offset + 1] = 0;
                 imgData.data[offset + 2] = 0;
@@ -470,8 +612,12 @@
         }
         ctx.putImageData(imgData, 0, 0);
 
+        var dataUrl = canvas.toDataURL();
+        console.log('DataURL length:', dataUrl.length);
+        console.log('=== END COG DIAGNOSTICS ===');
+
         return {
-            dataUrl: canvas.toDataURL(),
+            dataUrl: dataUrl,
             bbox: bbox,
             min: min,
             max: max
@@ -500,12 +646,14 @@
             if (!cogImage) {
                 var tiff = await GeoTIFF.fromUrl(COG_URL);
                 cogImage = await tiff.getImage();
+                var gdalNd = cogImage.getGDALNoData();
                 cogMetadata = {
                     bbox: cogImage.getBoundingBox(),
                     origin: cogImage.getOrigin(),
                     resolution: cogImage.getResolution(),
                     width: cogImage.getWidth(),
-                    height: cogImage.getHeight()
+                    height: cogImage.getHeight(),
+                    nodata: (gdalNd !== null) ? gdalNd : NODATA_VALUE
                 };
             }
 
@@ -541,13 +689,14 @@
             // Iterate pixels, check point-in-polygon
             var totalBiomass = 0;
             var pixelCount = 0;
+            var nd = cogMetadata.nodata;
 
             for (var row = 0; row < windowHeight; row++) {
                 for (var col = 0; col < windowWidth; col++) {
                     var idx = row * windowWidth + col;
                     var value = data[idx];
 
-                    if (value === NODATA_VALUE || isNaN(value)) continue;
+                    if (isNaN(value) || value === nd) continue;
 
                     var lng = origin[0] + (px0 + col + 0.5) * res[0];
                     var lat = origin[1] + (py0 + row + 0.5) * res[1];
