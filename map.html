@@ -170,11 +170,13 @@
     // CONFIGURATION
     // ============================================================
     // const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/peloncillo_DEM.tif';
-    const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/se_arizona_dem.tif';
+    const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/biomass_agb_mgha.tif';
+    //const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/se_arizona_dem.tif';
+
 
     const NODATA_VALUE = -9999;
-    const MAP_CENTER = [-109.04711, 31.53078];
-    const MAP_ZOOM = 12;
+    const MAP_CENTER = [-109.013, 31.50356];
+    const MAP_ZOOM = 14;
 
     // ============================================================
     // GLOBAL STATE
@@ -182,7 +184,7 @@
     let cogTiff = null;
     let cogImage = null;
     let cogMetadata = null;
-    let cogOverviews = [];     // [{img, width, height, resX}] sorted coarsest-first
+    let cogOverviews = [];     // [{img, width, height, resX}] used for min/max scan
     let cogInitialized = false;
     let cogLayerAdded = false;
     let biomassLayerVisible = false;
@@ -595,57 +597,46 @@
             return;
         }
 
-        // Determine desired resolution: match viewport pixel density, cap canvas at 1024px
-        var viewportGeoWidth = iEast - iWest;
-        var canvasPixelWidth = Math.min(map.getCanvas().width, 1024);
-        var desiredRes = viewportGeoWidth / canvasPixelWidth;
+        // Always use full-res image; let geotiff.js pick the overview via width/height params
+        var origin = cogMetadata.origin;
+        var res = cogMetadata.resolution;
 
-        // Pick the best overview: finest resolution that is >= desiredRes (not oversampling)
-        var bestImage = cogOverviews[0]; // start with coarsest
-        for (var i = 0; i < cogOverviews.length; i++) {
-            if (cogOverviews[i].resX <= desiredRes) {
-                bestImage = cogOverviews[i];
-                break;
-            }
-        }
-        // If all overviews are finer than desired, use the coarsest
-        // (already set as default above)
+        // Pixel window on full-res image
+        var px0 = Math.floor((iWest - origin[0]) / res[0]);
+        var py0 = Math.floor((iNorth - origin[1]) / res[1]);
+        var px1 = Math.ceil((iEast - origin[0]) / res[0]);
+        var py1 = Math.ceil((iSouth - origin[1]) / res[1]);
 
-        var img = bestImage.img;
-        // Use full-res origin; compute overview resolution from full-res ratio
-        var imgOrigin = cogMetadata.origin;
-        var fullRes = cogMetadata.resolution;
-        var scaleX = cogMetadata.width / bestImage.width;
-        var scaleY = cogMetadata.height / bestImage.height;
-        var imgRes = [fullRes[0] * scaleX, fullRes[1] * scaleY];
-        var imgWidth = bestImage.width;
-        var imgHeight = bestImage.height;
-
-        // Convert intersection bbox to pixel coordinates in this overview
-        var px0 = Math.floor((iWest - imgOrigin[0]) / imgRes[0]);
-        var py0 = Math.floor((iNorth - imgOrigin[1]) / imgRes[1]);
-        var px1 = Math.ceil((iEast - imgOrigin[0]) / imgRes[0]);
-        var py1 = Math.ceil((iSouth - imgOrigin[1]) / imgRes[1]);
-
-        // Clamp to image bounds
         px0 = Math.max(0, px0);
         py0 = Math.max(0, py0);
-        px1 = Math.min(imgWidth, px1);
-        py1 = Math.min(imgHeight, py1);
+        px1 = Math.min(cogMetadata.width, px1);
+        py1 = Math.min(cogMetadata.height, py1);
 
         if (px0 >= px1 || py0 >= py1) return;
 
-        // Compute the actual geo bounds of the clamped pixel window
-        var renderWest = imgOrigin[0] + px0 * imgRes[0];
-        var renderNorth = imgOrigin[1] + py0 * imgRes[1];
-        var renderEast = imgOrigin[0] + px1 * imgRes[0];
-        var renderSouth = imgOrigin[1] + py1 * imgRes[1];
+        // Target output size: match viewport but cap at 1024px
+        var rawW = px1 - px0;
+        var rawH = py1 - py0;
+        var targetW = Math.min(rawW, 1024);
+        var targetH = Math.round(targetW * (rawH / rawW));
 
-        // Read pixels for this window
-        var rasters = await img.readRasters({ window: [px0, py0, px1, py1] });
+        console.log('Viewport render — window:', rawW, 'x', rawH, '→ output:', targetW, 'x', targetH);
+
+        // Geo bounds of the clamped pixel window
+        var renderWest = origin[0] + px0 * res[0];
+        var renderNorth = origin[1] + py0 * res[1];
+        var renderEast = origin[0] + px1 * res[0];
+        var renderSouth = origin[1] + py1 * res[1];
+
+        // geotiff.js selects the best overview internally when width/height < window size
+        var rasters = await cogImage.readRasters({
+            window: [px0, py0, px1, py1],
+            width: targetW,
+            height: targetH
+        });
         var data = rasters[0];
-        var w = px1 - px0;
-        var h = py1 - py0;
+        var w = targetW;
+        var h = targetH;
         var nodata = cogMetadata.nodata;
 
         // Render to canvas
@@ -666,10 +657,23 @@
             } else {
                 var t = (globalMax > globalMin) ? (v - globalMin) / (globalMax - globalMin) : 0;
                 t = Math.max(0, Math.min(1, t));
-                imgData.data[off] = Math.round(240 - t * 200);
-                imgData.data[off + 1] = Math.round(248 - t * 100);
-                imgData.data[off + 2] = Math.round(200 - t * 180);
-                imgData.data[off + 3] = 180;
+                // 4-stop green ramp: #d9f0a3 → #78c679 → #238443 → #004529
+                var stops = [
+                    [0.0,  217, 240, 163],
+                    [0.33, 120, 198, 121],
+                    [0.67,  35, 132,  67],
+                    [1.0,    0,  69,  41]
+                ];
+                var si = 0;
+                for (var s = 1; s < stops.length - 1; s++) {
+                    if (t >= stops[s][0]) si = s;
+                }
+                var s0 = stops[si], s1 = stops[si + 1];
+                var st = (t - s0[0]) / (s1[0] - s0[0]);
+                imgData.data[off]     = Math.round(s0[1] + st * (s1[1] - s0[1]));
+                imgData.data[off + 1] = Math.round(s0[2] + st * (s1[2] - s0[2]));
+                imgData.data[off + 2] = Math.round(s0[3] + st * (s1[3] - s0[3]));
+                imgData.data[off + 3] = 230;
             }
         }
         ctx.putImageData(imgData, 0, 0);
@@ -692,7 +696,7 @@
                 id: 'biomass-layer',
                 type: 'raster',
                 source: 'biomass-raster',
-                paint: { 'raster-opacity': 0.7 }
+                paint: { 'raster-opacity': 0.95, 'raster-resampling': 'nearest' }
             });
             cogLayerAdded = true;
         } else {
@@ -710,7 +714,7 @@
             '<p style="margin-bottom:4px;font-size:0.8rem;font-weight:600;">Biomass</p>' +
             '<div style="display:flex;align-items:center;">' +
                 '<span style="font-size:0.75rem;">' + min.toFixed(0) + '</span>' +
-                '<div style="flex:1;height:12px;margin:0 6px;background:linear-gradient(to right, #f0f8c8, #2d8c2d);border-radius:2px;"></div>' +
+                '<div style="flex:1;height:12px;margin:0 6px;background:linear-gradient(to right, #d9f0a3, #78c679, #238443, #004529);border-radius:2px;"></div>' +
                 '<span style="font-size:0.75rem;">' + max.toFixed(0) + '</span>' +
             '</div>';
     }
