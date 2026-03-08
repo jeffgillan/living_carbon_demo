@@ -19,6 +19,9 @@
     <!-- Turf.js -->
     <script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
 
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -158,6 +161,9 @@
         <div class="control-section" id="results">
             <h4>Results</h4>
             <div id="results-content"></div>
+            <div id="histogram-container" style="position:relative;height:200px;margin-top:10px;display:none;">
+                <canvas id="biomass-histogram"></canvas>
+            </div>
         </div>
 
         <div class="control-section">
@@ -692,12 +698,21 @@
                 url: dataUrl,
                 coordinates: coordinates
             });
+            // Find first draw layer to insert biomass beneath it
+            var drawLayerId;
+            var layers = map.getStyle().layers;
+            for (var i = 0; i < layers.length; i++) {
+                if (layers[i].id.indexOf('gl-draw') === 0) {
+                    drawLayerId = layers[i].id;
+                    break;
+                }
+            }
             map.addLayer({
                 id: 'biomass-layer',
                 type: 'raster',
                 source: 'biomass-raster',
                 paint: { 'raster-opacity': 0.95, 'raster-resampling': 'nearest' }
-            });
+            }, drawLayerId);
             cogLayerAdded = true;
         } else {
             map.getSource('biomass-raster').updateImage({
@@ -773,6 +788,7 @@
             // Iterate pixels, check point-in-polygon
             var totalBiomass = 0;
             var pixelCount = 0;
+            var pixelValues = [];
             var nd = cogMetadata.nodata;
 
             for (var row = 0; row < windowHeight; row++) {
@@ -789,6 +805,7 @@
                     if (turf.booleanPointInPolygon(point, polygon)) {
                         totalBiomass += value;
                         pixelCount++;
+                        pixelValues.push(value);
                     }
                 }
             }
@@ -799,7 +816,7 @@
             }
 
             var area = turf.area(polygon); // square meters
-            displayResults(totalBiomass, pixelCount, area);
+            displayResults(totalBiomass, pixelCount, area, pixelValues);
         } catch (err) {
             console.error('Biomass calculation error:', err);
             displayError('Calculation error: ' + err.message);
@@ -815,13 +832,94 @@
         document.getElementById('results-content').innerHTML = '<p class="loading">Calculating...</p>';
     }
 
-    function displayResults(totalBiomass, pixelCount, area) {
+    var biomassChart = null;
+
+    function displayResults(totalBiomass, pixelCount, area, pixelValues) {
         var results = document.getElementById('results');
         results.style.display = 'block';
         document.getElementById('results-content').innerHTML =
             '<p><strong>Total Biomass:</strong> ' + formatNumber(totalBiomass.toFixed(2)) + '</p>' +
             '<p><strong>Pixels Summed:</strong> ' + formatNumber(pixelCount) + '</p>' +
             '<p><strong>Polygon Area:</strong> ' + formatNumber((area / 10000).toFixed(2)) + ' ha</p>';
+
+        renderHistogram(pixelValues);
+    }
+
+    function renderHistogram(values) {
+        var container = document.getElementById('histogram-container');
+        var canvas = document.getElementById('biomass-histogram');
+        if (!values || values.length === 0) {
+            container.style.display = 'none';
+            return;
+        }
+
+        var min = Infinity, max = -Infinity;
+        for (var i = 0; i < values.length; i++) {
+            if (values[i] < min) min = values[i];
+            if (values[i] > max) max = values[i];
+        }
+
+        var numBins = Math.min(20, Math.max(5, Math.ceil(Math.sqrt(values.length))));
+        if (max === min) { numBins = 1; }
+        var binWidth = (max - min) / numBins || 1;
+        var counts = new Array(numBins).fill(0);
+        var labels = [];
+
+        for (var i = 0; i < numBins; i++) {
+            var lo = min + i * binWidth;
+            var hi = lo + binWidth;
+            labels.push(lo.toFixed(1));
+        }
+
+        for (var i = 0; i < values.length; i++) {
+            var bin = Math.floor((values[i] - min) / binWidth);
+            if (bin >= numBins) bin = numBins - 1;
+            counts[bin]++;
+        }
+
+        // Destroy previous chart
+        if (biomassChart) {
+            biomassChart.destroy();
+            biomassChart = null;
+        }
+
+        container.style.display = 'block';
+        biomassChart = new Chart(canvas, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: counts,
+                    backgroundColor: 'rgba(35, 132, 67, 0.7)',
+                    borderColor: 'rgba(35, 132, 67, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 },
+                plugins: {
+                    legend: { display: false },
+                    title: {
+                        display: true,
+                        text: 'Biomass Distribution',
+                        font: { size: 12 }
+                    }
+                },
+                scales: {
+                    x: {
+                        title: { display: true, text: 'Biomass (Mg/ha)', font: { size: 10 } },
+                        ticks: { font: { size: 9 }, maxRotation: 45 }
+                    },
+                    y: {
+                        title: { display: true, text: 'Pixel Count', font: { size: 10 } },
+                        ticks: { font: { size: 9 } },
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
     }
 
     function displayError(msg) {
@@ -833,6 +931,11 @@
     function clearResults() {
         document.getElementById('results').style.display = 'none';
         document.getElementById('results-content').innerHTML = '';
+        if (biomassChart) {
+            biomassChart.destroy();
+            biomassChart = null;
+        }
+        document.getElementById('histogram-container').style.display = 'none';
     }
 
     function formatNumber(num) {
