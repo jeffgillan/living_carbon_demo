@@ -119,6 +119,26 @@
         }
         .back-link:hover { color: #222; }
 
+        /* Draw tools in control panel */
+        #draw-tools-container .maplibregl-ctrl-group {
+            display: flex;
+            gap: 8px;
+            box-shadow: none;
+            background: none;
+        }
+        #draw-tools-container .maplibregl-ctrl-group button {
+            width: 36px;
+            height: 36px;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 0;
+            cursor: pointer;
+        }
+        #draw-tools-container .maplibregl-ctrl-group button:hover {
+            background-color: #f0f0f0;
+        }
+
         /* MapLibre GL Draw cursor fixes for MapLibre compatibility */
         .maplibregl-canvas-container.mouse-pointer .maplibregl-canvas {
             cursor: pointer;
@@ -143,6 +163,7 @@
     <div id="control-panel">
         <a href="index.html" class="back-link">&larr; Back</a>
         <h3>Biomass Explorer</h3>
+        <p style="font-size: 0.85rem; color: #555; margin-bottom: 12px;">Draw an area of interest or upload a GeoJSON polygon to calculate total biomass from remotely sensed data.</p>
 
         <div class="control-section">
             <label>
@@ -151,6 +172,21 @@
             </label>
             <div id="cog-loading" style="display:none; font-size:0.8rem; color:#888; margin-top:4px;">Loading raster...</div>
             <div id="legend"></div>
+        </div>
+
+        <div class="control-section">
+            <label>
+                <input type="checkbox" id="tree-crowns-toggle">
+                Show Tree Crowns
+            </label>
+            <div id="tree-crowns-loading" style="display:none; font-size:0.8rem; color:#888; margin-top:4px;">
+                Loading tree crowns... <span id="tree-crowns-progress"></span>
+            </div>
+        </div>
+
+        <div class="control-section" id="draw-tools-section">
+            <span class="upload-label">Draw a polygon:</span>
+            <div id="draw-tools-container"></div>
         </div>
 
         <div class="control-section">
@@ -180,6 +216,7 @@
     //const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/se_arizona_dem.tif';
 
 
+    const TREE_CROWNS_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/tree_crowns.geojson';
     const NODATA_VALUE = -9999;
     const MAP_CENTER = [-109.013, 31.50356];
     const MAP_ZOOM = 14;
@@ -199,6 +236,9 @@
     let renderTimeout = null;
     let currentPolygon = null;
     let draw = null;
+    let treeCrownsData = null;
+    let treeCrownsLoaded = false;
+    let treeCrownsVisible = false;
 
     // ============================================================
     // MAP INITIALIZATION
@@ -328,6 +368,12 @@
             ]
         });
         map.addControl(draw, 'top-left');
+
+        // Move draw toolbar from map into control panel
+        var drawBar = document.querySelector('.maplibregl-ctrl-group.maplibregl-ctrl');
+        if (drawBar) {
+            document.getElementById('draw-tools-container').appendChild(drawBar);
+        }
 
         map.on('draw.create', handleDrawCreate);
         map.on('draw.update', handleDrawUpdate);
@@ -698,12 +744,12 @@
                 url: dataUrl,
                 coordinates: coordinates
             });
-            // Find first draw layer to insert biomass beneath it
-            var drawLayerId;
+            // Find insertion point: before tree-crowns if present, else before first draw layer
+            var beforeLayerId;
             var layers = map.getStyle().layers;
             for (var i = 0; i < layers.length; i++) {
-                if (layers[i].id.indexOf('gl-draw') === 0) {
-                    drawLayerId = layers[i].id;
+                if (layers[i].id === 'tree-crowns-fill' || layers[i].id.indexOf('gl-draw') === 0) {
+                    beforeLayerId = layers[i].id;
                     break;
                 }
             }
@@ -712,7 +758,7 @@
                 type: 'raster',
                 source: 'biomass-raster',
                 paint: { 'raster-opacity': 0.95, 'raster-resampling': 'nearest' }
-            }, drawLayerId);
+            }, beforeLayerId);
             cogLayerAdded = true;
         } else {
             map.getSource('biomass-raster').updateImage({
@@ -732,6 +778,140 @@
                 '<div style="flex:1;height:12px;margin:0 6px;background:linear-gradient(to right, #d9f0a3, #78c679, #238443, #004529);border-radius:2px;"></div>' +
                 '<span style="font-size:0.75rem;">' + max.toFixed(0) + '</span>' +
             '</div>';
+    }
+
+    // ============================================================
+    // TREE CROWNS LAYER
+    // ============================================================
+    document.getElementById('tree-crowns-toggle').addEventListener('change', function (e) {
+        toggleTreeCrowns(e.target.checked);
+    });
+
+    async function toggleTreeCrowns(visible) {
+        treeCrownsVisible = visible;
+        if (visible) {
+            if (!treeCrownsLoaded) {
+                document.getElementById('tree-crowns-loading').style.display = 'block';
+                try {
+                    await loadTreeCrowns();
+                } catch (err) {
+                    alert('Error loading tree crowns: ' + err.message);
+                    document.getElementById('tree-crowns-toggle').checked = false;
+                    treeCrownsVisible = false;
+                    document.getElementById('tree-crowns-loading').style.display = 'none';
+                    return;
+                }
+                document.getElementById('tree-crowns-loading').style.display = 'none';
+            }
+            map.setLayoutProperty('tree-crowns-fill', 'visibility', 'visible');
+            map.setLayoutProperty('tree-crowns-outline', 'visibility', 'visible');
+        } else {
+            if (treeCrownsLoaded) {
+                map.setLayoutProperty('tree-crowns-fill', 'visibility', 'none');
+                map.setLayoutProperty('tree-crowns-outline', 'visibility', 'none');
+            }
+        }
+    }
+
+    async function loadTreeCrowns() {
+        var response = await fetch(TREE_CROWNS_URL);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+
+        var contentLength = response.headers.get('Content-Length');
+        var total = contentLength ? parseInt(contentLength, 10) : 0;
+        var reader = response.body.getReader();
+        var chunks = [];
+        var received = 0;
+        var progressEl = document.getElementById('tree-crowns-progress');
+
+        while (true) {
+            var result = await reader.read();
+            if (result.done) break;
+            chunks.push(result.value);
+            received += result.value.length;
+            if (total && progressEl) {
+                progressEl.textContent = Math.round((received / total) * 100) + '%';
+            }
+        }
+
+        var blob = new Blob(chunks);
+        var text = await blob.text();
+        treeCrownsData = JSON.parse(text);
+
+        addTreeCrownsToMap(treeCrownsData);
+        treeCrownsLoaded = true;
+    }
+
+    function addTreeCrownsToMap(geojson) {
+        map.addSource('tree-crowns', {
+            type: 'geojson',
+            data: geojson
+        });
+
+        // Insert below draw layers
+        var beforeLayerId;
+        var layers = map.getStyle().layers;
+        for (var i = 0; i < layers.length; i++) {
+            if (layers[i].id.indexOf('gl-draw') === 0) {
+                beforeLayerId = layers[i].id;
+                break;
+            }
+        }
+
+        map.addLayer({
+            id: 'tree-crowns-fill',
+            type: 'fill',
+            source: 'tree-crowns',
+            minzoom: 13,
+            paint: {
+                'fill-color': '#00ffff',
+                'fill-opacity': 0.08
+            }
+        }, beforeLayerId);
+
+        map.addLayer({
+            id: 'tree-crowns-outline',
+            type: 'line',
+            source: 'tree-crowns',
+            minzoom: 13,
+            paint: {
+                'line-color': '#00ffff',
+                'line-width': [
+                    'interpolate', ['linear'], ['zoom'],
+                    13, 0.5,
+                    16, 1.5,
+                    19, 2.5
+                ],
+                'line-opacity': 0.85
+            }
+        }, beforeLayerId);
+
+        // Click popup for tree attributes
+        map.on('click', 'tree-crowns-fill', function (e) {
+            if (!e.features || e.features.length === 0) return;
+            // Suppress popup while drawing
+            if (draw && draw.getMode() !== 'simple_select') return;
+            var props = e.features[0].properties;
+            var html =
+                '<div style="font-size:0.85rem;line-height:1.5;">' +
+                '<strong>Tree #' + props.treeID + '</strong><br>' +
+                'Height: ' + (props.Z != null ? Number(props.Z).toFixed(2) + ' m' : 'N/A') + '<br>' +
+                'Crown diameter: ' + (props.crown_diameter != null ? Number(props.crown_diameter).toFixed(2) + ' m' : 'N/A') + '<br>' +
+                'DBH: ' + (props.DBH_cm != null ? Number(props.DBH_cm).toFixed(1) + ' cm' : 'N/A') + '<br>' +
+                'AGB: ' + (props.AGB_kg != null ? Number(props.AGB_kg).toFixed(2) + ' kg' : 'N/A') +
+                '</div>';
+            new maplibregl.Popup({ maxWidth: '250px' })
+                .setLngLat(e.lngLat)
+                .setHTML(html)
+                .addTo(map);
+        });
+
+        map.on('mouseenter', 'tree-crowns-fill', function () {
+            map.getCanvas().style.cursor = 'pointer';
+        });
+        map.on('mouseleave', 'tree-crowns-fill', function () {
+            map.getCanvas().style.cursor = '';
+        });
     }
 
     // ============================================================

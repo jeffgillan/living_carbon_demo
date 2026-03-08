@@ -17,8 +17,16 @@
         }
         .container {
             text-align: center;
-            max-width: 600px;
+            max-width: 700px;
             padding: 40px 24px;
+        }
+        .hero-img {
+            width: 100%;
+            max-height: 360px;
+            object-fit: cover;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            margin-bottom: 32px;
         }
         h1 {
             font-size: 2.4rem;
@@ -32,6 +40,12 @@
             color: #555;
             margin-bottom: 32px;
         }
+        .btn-group {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
         .btn {
             display: inline-block;
             padding: 14px 36px;
@@ -41,18 +55,33 @@
             border-radius: 6px;
             font-size: 1.1rem;
             font-weight: 600;
-            transition: background 0.2s;
+            transition: background 0.2s, color 0.2s;
         }
         .btn:hover {
             background: #236b23;
+        }
+        .btn-outline {
+            background: #fff;
+            color: #2d8c2d;
+            border: 2px solid #2d8c2d;
+        }
+        .btn-outline:hover {
+            background: #2d8c2d;
+            color: #fff;
         }
     </style>
 </head>
 <body>
     <div class="container">
+        <img src="peloncillo_landscape.png" alt="Drone landscape of Peloncillo Mountains" class="hero-img">
         <h1>Biomass Explorer</h1>
-        <p>Draw an area of interest or upload a GeoJSON polygon to calculate total biomass from remotely sensed data.</p>
-        <a href="map.html" class="btn">Open Map</a>
+        <p>Peloncillo Mountains, New Mexico</p>
+        <div class="btn-group">
+            <a href="map.html" class="btn">Open Biomass Map</a>
+            <a href="https://github.com/jeffgillan/biomass_pipeline" target="_blank" class="btn btn-outline">Biomass Pipeline Documentation</a>
+            <a href="https://ps2.d2s.org/sharepotree?file_id=d93c3d38-e8da-4773-b5da-20737d7951e6" target="_blank" class="btn btn-outline">3D LiDAR Map</a>
+            <a href="https://ps2.d2s.org/sharepotree?file_id=75759d11-fa6b-428c-a9a1-ededd89dbe91" target="_blank" class="btn btn-outline">3D Drone Map</a>
+        </div>
     </div>
 </body>
 </html>
