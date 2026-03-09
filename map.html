@@ -163,7 +163,8 @@
     <div id="control-panel">
         <a href="index.html" class="back-link">&larr; Back</a>
         <h3>Biomass Explorer</h3>
-        <p style="font-size: 0.85rem; color: #555; margin-bottom: 12px;">Draw an area of interest or upload a GeoJSON polygon to calculate total biomass from remotely sensed data.</p>
+        <p style="font-size: 0.85rem; color: #555; margin-bottom: 4px;">Draw an area of interest or upload a GeoJSON polygon to calculate total biomass from remotely sensed data.</p>
+        <p style="font-size: 0.85rem; margin-bottom: 12px;"><a href="https://github.com/jeffgillan/biomass_pipeline" target="_blank" rel="noopener noreferrer">Learn More</a></p>
 
         <div class="control-section">
             <label>
@@ -218,6 +219,7 @@
             <div id="histogram-container" style="position:relative;height:200px;margin-top:10px;display:none;">
                 <canvas id="biomass-histogram"></canvas>
             </div>
+            <button id="download-csv-btn" style="display:none;margin-top:10px;" onclick="downloadCSV()">Download CSV</button>
         </div>
 
         <div class="control-section">
@@ -255,6 +257,7 @@
     let globalMax = 1;
     let renderTimeout = null;
     let currentPolygon = null;
+    let lastStats = null;
     let draw = null;
     let treeCrownsData = null;
     let treeCrownsLoaded = false;
@@ -1120,18 +1123,49 @@
 
     var biomassChart = null;
 
+    function computeHistogramBins(values) {
+        if (!values || values.length === 0) return [];
+        var min = Infinity, max = -Infinity;
+        for (var i = 0; i < values.length; i++) {
+            if (values[i] < min) min = values[i];
+            if (values[i] > max) max = values[i];
+        }
+        var numBins = Math.min(20, Math.max(5, Math.ceil(Math.sqrt(values.length))));
+        if (max === min) { numBins = 1; }
+        var binWidth = (max - min) / numBins || 1;
+        var counts = new Array(numBins).fill(0);
+        for (var i = 0; i < values.length; i++) {
+            var bin = Math.floor((values[i] - min) / binWidth);
+            if (bin >= numBins) bin = numBins - 1;
+            counts[bin]++;
+        }
+        var bins = [];
+        for (var i = 0; i < numBins; i++) {
+            var lo = min + i * binWidth;
+            var hi = lo + binWidth;
+            bins.push({ label: lo.toFixed(1) + ' - ' + hi.toFixed(1), lo: lo, count: counts[i] });
+        }
+        return bins;
+    }
+
     function displayResults(totalBiomass, pixelCount, area, pixelValues) {
         var results = document.getElementById('results');
         results.style.display = 'block';
+        var areaHa = area / 10000;
+        var mean = pixelCount > 0 ? totalBiomass / pixelCount : 0;
         document.getElementById('results-content').innerHTML =
-            '<p><strong>Total Biomass:</strong> ' + formatNumber(totalBiomass.toFixed(2)) + '</p>' +
+            '<p><strong>Total Biomass:</strong> ' + formatNumber(totalBiomass.toFixed(2)) + ' Mg</p>' +
+            '<p><strong>Mean Biomass:</strong> ' + formatNumber(mean.toFixed(2)) + ' Mg/ha</p>' +
             '<p><strong>Pixels Summed:</strong> ' + formatNumber(pixelCount) + '</p>' +
-            '<p><strong>Polygon Area:</strong> ' + formatNumber((area / 10000).toFixed(2)) + ' ha</p>';
+            '<p><strong>Polygon Area:</strong> ' + formatNumber(areaHa.toFixed(2)) + ' ha</p>';
 
-        renderHistogram(pixelValues);
+        var bins = computeHistogramBins(pixelValues);
+        lastStats = { totalBiomass: totalBiomass, pixelCount: pixelCount, area: areaHa, pixelValues: pixelValues, bins: bins };
+        document.getElementById('download-csv-btn').style.display = 'block';
+        renderHistogram(pixelValues, bins);
     }
 
-    function renderHistogram(values) {
+    function renderHistogram(values, bins) {
         var container = document.getElementById('histogram-container');
         var canvas = document.getElementById('biomass-histogram');
         if (!values || values.length === 0) {
@@ -1139,29 +1173,9 @@
             return;
         }
 
-        var min = Infinity, max = -Infinity;
-        for (var i = 0; i < values.length; i++) {
-            if (values[i] < min) min = values[i];
-            if (values[i] > max) max = values[i];
-        }
-
-        var numBins = Math.min(20, Math.max(5, Math.ceil(Math.sqrt(values.length))));
-        if (max === min) { numBins = 1; }
-        var binWidth = (max - min) / numBins || 1;
-        var counts = new Array(numBins).fill(0);
-        var labels = [];
-
-        for (var i = 0; i < numBins; i++) {
-            var lo = min + i * binWidth;
-            var hi = lo + binWidth;
-            labels.push(lo.toFixed(1));
-        }
-
-        for (var i = 0; i < values.length; i++) {
-            var bin = Math.floor((values[i] - min) / binWidth);
-            if (bin >= numBins) bin = numBins - 1;
-            counts[bin]++;
-        }
+        if (!bins) bins = computeHistogramBins(values);
+        var labels = bins.map(function(b) { return b.lo.toFixed(1); });
+        var counts = bins.map(function(b) { return b.count; });
 
         // Destroy previous chart
         if (biomassChart) {
@@ -1222,6 +1236,39 @@
             biomassChart = null;
         }
         document.getElementById('histogram-container').style.display = 'none';
+        document.getElementById('download-csv-btn').style.display = 'none';
+        lastStats = null;
+    }
+
+    function downloadCSV() {
+        if (!lastStats) return;
+        var s = lastStats;
+        var min = s.pixelValues.length > 0 ? Math.min.apply(null, s.pixelValues) : 0;
+        var max = s.pixelValues.length > 0 ? Math.max.apply(null, s.pixelValues) : 0;
+
+        var csv = 'Summary Statistics\n';
+        csv += 'Metric,Value,Unit\n';
+        csv += 'Polygon Area,' + s.area.toFixed(2) + ',hectares\n';
+        csv += 'Total Biomass,' + s.totalBiomass.toFixed(2) + ',Mg\n';
+        csv += 'Mean Biomass per Pixel,' + (s.pixelCount > 0 ? (s.totalBiomass / s.pixelCount).toFixed(2) : '0') + ',Mg/ha\n';
+        csv += 'Min Pixel Value,' + min.toFixed(2) + ',Mg/ha\n';
+        csv += 'Max Pixel Value,' + max.toFixed(2) + ',Mg/ha\n';
+        csv += 'Pixel Count,' + s.pixelCount + ',pixels\n';
+        csv += 'Export Date,' + new Date().toISOString() + ',\n';
+
+        csv += '\nHistogram\n';
+        csv += 'Bin Range (Mg/ha),Pixel Count\n';
+        for (var i = 0; i < s.bins.length; i++) {
+            csv += s.bins[i].label + ',' + s.bins[i].count + '\n';
+        }
+
+        var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'biomass_stats.csv';
+        a.click();
+        URL.revokeObjectURL(url);
     }
 
     function formatNumber(num) {
