@@ -176,6 +176,24 @@
 
         <div class="control-section">
             <label>
+                <input type="checkbox" id="precision-mgha-toggle">
+                Precision (Mg/Ha)
+            </label>
+            <div id="precision-mgha-loading" style="display:none; font-size:0.8rem; color:#888; margin-top:4px;">Loading raster...</div>
+            <div id="precision-mgha-legend"></div>
+        </div>
+
+        <div class="control-section">
+            <label>
+                <input type="checkbox" id="precision-cv-toggle">
+                Precision (CV pct)
+            </label>
+            <div id="precision-cv-loading" style="display:none; font-size:0.8rem; color:#888; margin-top:4px;">Loading raster...</div>
+            <div id="precision-cv-legend"></div>
+        </div>
+
+        <div class="control-section">
+            <label>
                 <input type="checkbox" id="tree-crowns-toggle">
                 Show Tree Crowns
             </label>
@@ -216,6 +234,8 @@
     //const COG_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/se_arizona_dem.tif';
 
 
+    const PRECISION_MGHA_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/biomass_uncertainty_mgha_4326.tif';
+    const PRECISION_CV_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/biomass_uncertainty_cv_pct.tif';
     const TREE_CROWNS_URL = 'https://data.cyverse.org/dav-anon/iplant/home/jgillan/living_carbon_demo/tree_crowns.geojson';
     const NODATA_VALUE = -9999;
     const MAP_CENTER = [-109.013, 31.50356];
@@ -239,6 +259,32 @@
     let treeCrownsData = null;
     let treeCrownsLoaded = false;
     let treeCrownsVisible = false;
+
+    // Precision (Mg/Ha) layer state
+    let precMghaImage = null, precMghaMetadata = null;
+    let precMghaInitialized = false, precMghaLayerAdded = false, precMghaVisible = false;
+    let precMghaMin = 0, precMghaMax = 1;
+    let precMghaRenderTimeout = null;
+
+    // Precision (CV pct) layer state
+    let precCvImage = null, precCvMetadata = null;
+    let precCvInitialized = false, precCvLayerAdded = false, precCvVisible = false;
+    let precCvMin = 0, precCvMax = 1;
+    let precCvRenderTimeout = null;
+
+    // Shared color ramps
+    var GREEN_RAMP = [
+        [0.0,  217, 240, 163],
+        [0.33, 120, 198, 121],
+        [0.67,  35, 132,  67],
+        [1.0,    0,  69,  41]
+    ];
+    var YELLOW_RED_RAMP = [
+        [0.0,  255, 255, 178],
+        [0.33, 254, 204,  92],
+        [0.67, 253, 141,  60],
+        [1.0,  227,  26,  28]
+    ];
 
     // ============================================================
     // MAP INITIALIZATION
@@ -506,15 +552,175 @@
     // ============================================================
     // COG LAYER VISUALIZATION — VIEWPORT-BASED DYNAMIC RENDERING
     // ============================================================
+
+    // --- Generic COG init: returns {image, metadata, min, max} ---
+    async function initCOGLayer(url) {
+        var tiff = await GeoTIFF.fromUrl(url);
+        var fullImage = await tiff.getImage();
+        var bbox = fullImage.getBoundingBox();
+        var gdalNodata = fullImage.getGDALNoData();
+        var nodata = (gdalNodata !== null) ? gdalNodata : NODATA_VALUE;
+
+        console.log('=== COG INIT (' + url.split('/').pop() + ') ===');
+        console.log('Full-res:', fullImage.getWidth(), 'x', fullImage.getHeight());
+        console.log('BBox:', bbox);
+        console.log('Nodata:', nodata);
+
+        var metadata = {
+            bbox: bbox,
+            origin: fullImage.getOrigin(),
+            resolution: fullImage.getResolution(),
+            width: fullImage.getWidth(),
+            height: fullImage.getHeight(),
+            nodata: nodata
+        };
+
+        // Catalog overviews for min/max scan
+        var imageCount = await tiff.getImageCount();
+        var fullWidth = fullImage.getWidth();
+        var fullSpp = fullImage.getSamplesPerPixel();
+        var allImages = [];
+        var fullRes = fullImage.getResolution();
+        allImages.push({ img: fullImage, width: fullImage.getWidth(), height: fullImage.getHeight(), resX: Math.abs(fullRes[0]) });
+
+        var fullResX = Math.abs(fullRes[0]);
+        for (var i = 1; i < imageCount; i++) {
+            var img = await tiff.getImage(i);
+            if (img.getWidth() < fullWidth && img.getSamplesPerPixel() === fullSpp) {
+                var ovResX = fullResX * (fullWidth / img.getWidth());
+                allImages.push({ img: img, width: img.getWidth(), height: img.getHeight(), resX: ovResX });
+            }
+        }
+        allImages.sort(function (a, b) { return b.resX - a.resX; });
+
+        // Compute global min/max from coarsest overview
+        var smallest = allImages[0];
+        var rasters = await smallest.img.readRasters();
+        var data = rasters[0];
+        var min = Infinity, max = -Infinity;
+        for (var i = 0; i < data.length; i++) {
+            var v = data[i];
+            if (isNaN(v) || v === nodata) continue;
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+        console.log('Global value range:', min, '—', max);
+        console.log('=== END COG INIT ===');
+
+        return { image: fullImage, metadata: metadata, min: min, max: max, overviews: allImages };
+    }
+
+    // --- Generic viewport render for any COG layer ---
+    async function renderCOGViewport(opts) {
+        // opts: {image, metadata, min, max, sourceId, layerId, colorRamp, layerAdded}
+        // Returns updated layerAdded flag
+        var meta = opts.metadata;
+        var bounds = map.getBounds();
+        var cogBbox = meta.bbox;
+
+        var iWest = Math.max(bounds.getWest(), cogBbox[0]);
+        var iSouth = Math.max(bounds.getSouth(), cogBbox[1]);
+        var iEast = Math.min(bounds.getEast(), cogBbox[2]);
+        var iNorth = Math.min(bounds.getNorth(), cogBbox[3]);
+
+        if (iWest >= iEast || iSouth >= iNorth) {
+            if (opts.layerAdded) map.setLayoutProperty(opts.layerId, 'visibility', 'none');
+            return opts.layerAdded;
+        }
+
+        var origin = meta.origin;
+        var res = meta.resolution;
+        var px0 = Math.max(0, Math.floor((iWest - origin[0]) / res[0]));
+        var py0 = Math.max(0, Math.floor((iNorth - origin[1]) / res[1]));
+        var px1 = Math.min(meta.width, Math.ceil((iEast - origin[0]) / res[0]));
+        var py1 = Math.min(meta.height, Math.ceil((iSouth - origin[1]) / res[1]));
+        if (px0 >= px1 || py0 >= py1) return opts.layerAdded;
+
+        var rawW = px1 - px0, rawH = py1 - py0;
+        var targetW = Math.min(rawW, 1024);
+        var targetH = Math.round(targetW * (rawH / rawW));
+
+        var renderWest = origin[0] + px0 * res[0];
+        var renderNorth = origin[1] + py0 * res[1];
+        var renderEast = origin[0] + px1 * res[0];
+        var renderSouth = origin[1] + py1 * res[1];
+
+        var rasters = await opts.image.readRasters({ window: [px0, py0, px1, py1], width: targetW, height: targetH });
+        var data = rasters[0];
+        var nodata = meta.nodata;
+        var gMin = opts.min, gMax = opts.max;
+        var stops = opts.colorRamp;
+
+        var canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        var ctx = canvas.getContext('2d');
+        var imgData = ctx.createImageData(targetW, targetH);
+
+        for (var i = 0; i < data.length; i++) {
+            var v = data[i];
+            var off = i * 4;
+            if (isNaN(v) || v === nodata) {
+                imgData.data[off] = 0; imgData.data[off+1] = 0; imgData.data[off+2] = 0; imgData.data[off+3] = 0;
+            } else {
+                var t = (gMax > gMin) ? (v - gMin) / (gMax - gMin) : 0;
+                t = Math.max(0, Math.min(1, t));
+                var si = 0;
+                for (var s = 1; s < stops.length - 1; s++) { if (t >= stops[s][0]) si = s; }
+                var s0 = stops[si], s1 = stops[si + 1];
+                var st = (t - s0[0]) / (s1[0] - s0[0]);
+                imgData.data[off]     = Math.round(s0[1] + st * (s1[1] - s0[1]));
+                imgData.data[off + 1] = Math.round(s0[2] + st * (s1[2] - s0[2]));
+                imgData.data[off + 2] = Math.round(s0[3] + st * (s1[3] - s0[3]));
+                imgData.data[off + 3] = 230;
+            }
+        }
+        ctx.putImageData(imgData, 0, 0);
+        var dataUrl = canvas.toDataURL();
+        var coordinates = [
+            [renderWest, renderNorth], [renderEast, renderNorth],
+            [renderEast, renderSouth], [renderWest, renderSouth]
+        ];
+
+        if (!opts.layerAdded) {
+            map.addSource(opts.sourceId, { type: 'image', url: dataUrl, coordinates: coordinates });
+            var beforeLayerId;
+            var layers = map.getStyle().layers;
+            for (var i = 0; i < layers.length; i++) {
+                if (layers[i].id === 'tree-crowns-fill' || layers[i].id.indexOf('gl-draw') === 0) {
+                    beforeLayerId = layers[i].id;
+                    break;
+                }
+            }
+            map.addLayer({
+                id: opts.layerId, type: 'raster', source: opts.sourceId,
+                paint: { 'raster-opacity': 0.95, 'raster-resampling': 'nearest' }
+            }, beforeLayerId);
+            return true;
+        } else {
+            map.getSource(opts.sourceId).updateImage({ url: dataUrl, coordinates: coordinates });
+            map.setLayoutProperty(opts.layerId, 'visibility', 'visible');
+            return true;
+        }
+    }
+
+    // --- Generic legend creation ---
+    function createColorLegend(elementId, label, min, max, cssGradient) {
+        var el = document.getElementById(elementId);
+        el.innerHTML =
+            '<p style="margin-bottom:4px;font-size:0.8rem;font-weight:600;">' + label + '</p>' +
+            '<div style="display:flex;align-items:center;">' +
+                '<span style="font-size:0.75rem;">' + min.toFixed(0) + '</span>' +
+                '<div style="flex:1;height:12px;margin:0 6px;background:linear-gradient(to right, ' + cssGradient + ');border-radius:2px;"></div>' +
+                '<span style="font-size:0.75rem;">' + max.toFixed(0) + '</span>' +
+            '</div>';
+    }
+
+    // ============================================================
+    // BIOMASS LAYER
+    // ============================================================
     document.getElementById('biomass-toggle').addEventListener('change', function (e) {
         toggleBiomassLayer(e.target.checked);
-    });
-
-    // Debounced moveend listener for dynamic re-rendering
-    map.on('moveend', function () {
-        if (!biomassLayerVisible) return;
-        clearTimeout(renderTimeout);
-        renderTimeout = setTimeout(function () { renderViewport(); }, 200);
     });
 
     async function toggleBiomassLayer(visible) {
@@ -523,7 +729,14 @@
             if (!cogInitialized) {
                 document.getElementById('cog-loading').style.display = 'block';
                 try {
-                    await initCOG();
+                    var result = await initCOGLayer(COG_URL);
+                    cogImage = result.image;
+                    cogMetadata = result.metadata;
+                    globalMin = result.min;
+                    globalMax = result.max;
+                    cogOverviews = result.overviews;
+                    cogInitialized = true;
+                    createColorLegend('legend', 'Biomass (Mg/Ha)', globalMin, globalMax, '#d9f0a3, #78c679, #238443, #004529');
                 } catch (err) {
                     alert('Error loading biomass data: ' + err.message);
                     document.getElementById('biomass-toggle').checked = false;
@@ -537,7 +750,7 @@
                 map.setLayoutProperty('biomass-layer', 'visibility', 'visible');
             }
             document.getElementById('legend').style.display = 'block';
-            renderViewport();
+            renderBiomassViewport();
         } else {
             if (cogLayerAdded) {
                 map.setLayoutProperty('biomass-layer', 'visibility', 'none');
@@ -546,239 +759,132 @@
         }
     }
 
-    // Initialize COG: open tiff, cache metadata, catalog overviews, compute global min/max
-    async function initCOG() {
-        cogTiff = await GeoTIFF.fromUrl(COG_URL);
-        var fullImage = await cogTiff.getImage();
-        var bbox = fullImage.getBoundingBox();
-        var gdalNodata = fullImage.getGDALNoData();
-        var nodata = (gdalNodata !== null) ? gdalNodata : NODATA_VALUE;
-
-        console.log('=== COG INIT ===');
-        console.log('Full-res:', fullImage.getWidth(), 'x', fullImage.getHeight());
-        console.log('BBox:', bbox);
-        console.log('Nodata:', nodata);
-
-        cogImage = fullImage;
-        cogMetadata = {
-            bbox: bbox,
-            origin: fullImage.getOrigin(),
-            resolution: fullImage.getResolution(),
-            width: fullImage.getWidth(),
-            height: fullImage.getHeight(),
-            nodata: nodata
-        };
-
-        // Catalog all overview levels (including full-res as index 0)
-        var imageCount = await cogTiff.getImageCount();
-        var fullWidth = fullImage.getWidth();
-        var fullSpp = fullImage.getSamplesPerPixel();
-        var allImages = [];
-
-        // Full-res image
-        var fullRes = fullImage.getResolution();
-        allImages.push({
-            img: fullImage,
-            width: fullImage.getWidth(),
-            height: fullImage.getHeight(),
-            resX: Math.abs(fullRes[0])
-        });
-
-        // Overviews — compute resolution from full-res ratio (overviews lack own geo transform)
-        var fullResX = Math.abs(fullRes[0]);
-        for (var i = 1; i < imageCount; i++) {
-            var img = await cogTiff.getImage(i);
-            if (img.getWidth() < fullWidth && img.getSamplesPerPixel() === fullSpp) {
-                var ovResX = fullResX * (fullWidth / img.getWidth());
-                allImages.push({
-                    img: img,
-                    width: img.getWidth(),
-                    height: img.getHeight(),
-                    resX: ovResX
-                });
-                console.log('  Overview:', img.getWidth(), 'x', img.getHeight(), '| res:', ovResX.toFixed(6));
-            }
-        }
-        // Sort by resolution: coarsest (largest resX) first, finest last
-        allImages.sort(function (a, b) { return b.resX - a.resX; });
-        cogOverviews = allImages;
-
-        // Compute global min/max from the smallest (coarsest) overview for consistent color scaling
-        var smallest = allImages[0]; // coarsest overview
-        var rasters = await smallest.img.readRasters();
-        var data = rasters[0];
-        var min = Infinity, max = -Infinity;
-        for (var i = 0; i < data.length; i++) {
-            var v = data[i];
-            if (isNaN(v) || v === nodata) continue;
-            if (v < min) min = v;
-            if (v > max) max = v;
-        }
-        globalMin = min;
-        globalMax = max;
-        console.log('Global value range:', min, '—', max);
-        console.log('Overview levels:', allImages.length);
-        console.log('=== END COG INIT ===');
-
-        createLegend(globalMin, globalMax);
-        cogInitialized = true;
-    }
-
-    // Render the COG for the current map viewport
-    async function renderViewport() {
+    async function renderBiomassViewport() {
         if (!cogInitialized || !biomassLayerVisible) return;
-
-        var bounds = map.getBounds();
-        var west = bounds.getWest();
-        var south = bounds.getSouth();
-        var east = bounds.getEast();
-        var north = bounds.getNorth();
-        var cogBbox = cogMetadata.bbox; // [west, south, east, north]
-
-        // Intersect viewport with COG extent
-        var iWest = Math.max(west, cogBbox[0]);
-        var iSouth = Math.max(south, cogBbox[1]);
-        var iEast = Math.min(east, cogBbox[2]);
-        var iNorth = Math.min(north, cogBbox[3]);
-
-        if (iWest >= iEast || iSouth >= iNorth) {
-            // No overlap — hide layer if showing
-            if (cogLayerAdded) {
-                map.setLayoutProperty('biomass-layer', 'visibility', 'none');
-            }
-            return;
-        }
-
-        // Always use full-res image; let geotiff.js pick the overview via width/height params
-        var origin = cogMetadata.origin;
-        var res = cogMetadata.resolution;
-
-        // Pixel window on full-res image
-        var px0 = Math.floor((iWest - origin[0]) / res[0]);
-        var py0 = Math.floor((iNorth - origin[1]) / res[1]);
-        var px1 = Math.ceil((iEast - origin[0]) / res[0]);
-        var py1 = Math.ceil((iSouth - origin[1]) / res[1]);
-
-        px0 = Math.max(0, px0);
-        py0 = Math.max(0, py0);
-        px1 = Math.min(cogMetadata.width, px1);
-        py1 = Math.min(cogMetadata.height, py1);
-
-        if (px0 >= px1 || py0 >= py1) return;
-
-        // Target output size: match viewport but cap at 1024px
-        var rawW = px1 - px0;
-        var rawH = py1 - py0;
-        var targetW = Math.min(rawW, 1024);
-        var targetH = Math.round(targetW * (rawH / rawW));
-
-        console.log('Viewport render — window:', rawW, 'x', rawH, '→ output:', targetW, 'x', targetH);
-
-        // Geo bounds of the clamped pixel window
-        var renderWest = origin[0] + px0 * res[0];
-        var renderNorth = origin[1] + py0 * res[1];
-        var renderEast = origin[0] + px1 * res[0];
-        var renderSouth = origin[1] + py1 * res[1];
-
-        // geotiff.js selects the best overview internally when width/height < window size
-        var rasters = await cogImage.readRasters({
-            window: [px0, py0, px1, py1],
-            width: targetW,
-            height: targetH
+        cogLayerAdded = await renderCOGViewport({
+            image: cogImage, metadata: cogMetadata, min: globalMin, max: globalMax,
+            sourceId: 'biomass-raster', layerId: 'biomass-layer',
+            colorRamp: GREEN_RAMP, layerAdded: cogLayerAdded
         });
-        var data = rasters[0];
-        var w = targetW;
-        var h = targetH;
-        var nodata = cogMetadata.nodata;
+    }
 
-        // Render to canvas
-        var canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        var ctx = canvas.getContext('2d');
-        var imgData = ctx.createImageData(w, h);
+    // ============================================================
+    // PRECISION (Mg/Ha) LAYER
+    // ============================================================
+    document.getElementById('precision-mgha-toggle').addEventListener('change', function (e) {
+        togglePrecisionMgha(e.target.checked);
+    });
 
-        for (var i = 0; i < data.length; i++) {
-            var v = data[i];
-            var off = i * 4;
-            if (isNaN(v) || v === nodata) {
-                imgData.data[off] = 0;
-                imgData.data[off + 1] = 0;
-                imgData.data[off + 2] = 0;
-                imgData.data[off + 3] = 0;
-            } else {
-                var t = (globalMax > globalMin) ? (v - globalMin) / (globalMax - globalMin) : 0;
-                t = Math.max(0, Math.min(1, t));
-                // 4-stop green ramp: #d9f0a3 → #78c679 → #238443 → #004529
-                var stops = [
-                    [0.0,  217, 240, 163],
-                    [0.33, 120, 198, 121],
-                    [0.67,  35, 132,  67],
-                    [1.0,    0,  69,  41]
-                ];
-                var si = 0;
-                for (var s = 1; s < stops.length - 1; s++) {
-                    if (t >= stops[s][0]) si = s;
+    async function togglePrecisionMgha(visible) {
+        precMghaVisible = visible;
+        if (visible) {
+            if (!precMghaInitialized) {
+                document.getElementById('precision-mgha-loading').style.display = 'block';
+                try {
+                    var result = await initCOGLayer(PRECISION_MGHA_URL);
+                    precMghaImage = result.image;
+                    precMghaMetadata = result.metadata;
+                    precMghaMin = result.min;
+                    precMghaMax = result.max;
+                    precMghaInitialized = true;
+                    createColorLegend('precision-mgha-legend', 'Precision (Mg/Ha)', precMghaMin, precMghaMax, '#ffffb2, #fecc5c, #fd8d3c, #e31a1c');
+                } catch (err) {
+                    alert('Error loading Precision (Mg/Ha) data: ' + err.message);
+                    document.getElementById('precision-mgha-toggle').checked = false;
+                    precMghaVisible = false;
+                    document.getElementById('precision-mgha-loading').style.display = 'none';
+                    return;
                 }
-                var s0 = stops[si], s1 = stops[si + 1];
-                var st = (t - s0[0]) / (s1[0] - s0[0]);
-                imgData.data[off]     = Math.round(s0[1] + st * (s1[1] - s0[1]));
-                imgData.data[off + 1] = Math.round(s0[2] + st * (s1[2] - s0[2]));
-                imgData.data[off + 2] = Math.round(s0[3] + st * (s1[3] - s0[3]));
-                imgData.data[off + 3] = 230;
+                document.getElementById('precision-mgha-loading').style.display = 'none';
             }
-        }
-        ctx.putImageData(imgData, 0, 0);
-        var dataUrl = canvas.toDataURL();
-
-        var coordinates = [
-            [renderWest, renderNorth],  // top-left
-            [renderEast, renderNorth],  // top-right
-            [renderEast, renderSouth],  // bottom-right
-            [renderWest, renderSouth]   // bottom-left
-        ];
-
-        if (!cogLayerAdded) {
-            map.addSource('biomass-raster', {
-                type: 'image',
-                url: dataUrl,
-                coordinates: coordinates
-            });
-            // Find insertion point: before tree-crowns if present, else before first draw layer
-            var beforeLayerId;
-            var layers = map.getStyle().layers;
-            for (var i = 0; i < layers.length; i++) {
-                if (layers[i].id === 'tree-crowns-fill' || layers[i].id.indexOf('gl-draw') === 0) {
-                    beforeLayerId = layers[i].id;
-                    break;
-                }
+            if (precMghaLayerAdded) {
+                map.setLayoutProperty('precision-mgha-layer', 'visibility', 'visible');
             }
-            map.addLayer({
-                id: 'biomass-layer',
-                type: 'raster',
-                source: 'biomass-raster',
-                paint: { 'raster-opacity': 0.95, 'raster-resampling': 'nearest' }
-            }, beforeLayerId);
-            cogLayerAdded = true;
+            document.getElementById('precision-mgha-legend').style.display = 'block';
+            renderPrecisionMghaViewport();
         } else {
-            map.getSource('biomass-raster').updateImage({
-                url: dataUrl,
-                coordinates: coordinates
-            });
-            map.setLayoutProperty('biomass-layer', 'visibility', 'visible');
+            if (precMghaLayerAdded) {
+                map.setLayoutProperty('precision-mgha-layer', 'visibility', 'none');
+            }
+            document.getElementById('precision-mgha-legend').style.display = 'none';
         }
     }
 
-    function createLegend(min, max) {
-        var legend = document.getElementById('legend');
-        legend.innerHTML =
-            '<p style="margin-bottom:4px;font-size:0.8rem;font-weight:600;">Biomass</p>' +
-            '<div style="display:flex;align-items:center;">' +
-                '<span style="font-size:0.75rem;">' + min.toFixed(0) + '</span>' +
-                '<div style="flex:1;height:12px;margin:0 6px;background:linear-gradient(to right, #d9f0a3, #78c679, #238443, #004529);border-radius:2px;"></div>' +
-                '<span style="font-size:0.75rem;">' + max.toFixed(0) + '</span>' +
-            '</div>';
+    async function renderPrecisionMghaViewport() {
+        if (!precMghaInitialized || !precMghaVisible) return;
+        precMghaLayerAdded = await renderCOGViewport({
+            image: precMghaImage, metadata: precMghaMetadata, min: precMghaMin, max: precMghaMax,
+            sourceId: 'precision-mgha-raster', layerId: 'precision-mgha-layer',
+            colorRamp: YELLOW_RED_RAMP, layerAdded: precMghaLayerAdded
+        });
     }
+
+    // ============================================================
+    // PRECISION (CV pct) LAYER
+    // ============================================================
+    document.getElementById('precision-cv-toggle').addEventListener('change', function (e) {
+        togglePrecisionCv(e.target.checked);
+    });
+
+    async function togglePrecisionCv(visible) {
+        precCvVisible = visible;
+        if (visible) {
+            if (!precCvInitialized) {
+                document.getElementById('precision-cv-loading').style.display = 'block';
+                try {
+                    var result = await initCOGLayer(PRECISION_CV_URL);
+                    precCvImage = result.image;
+                    precCvMetadata = result.metadata;
+                    precCvMin = result.min;
+                    precCvMax = result.max;
+                    precCvInitialized = true;
+                    createColorLegend('precision-cv-legend', 'Precision (CV %)', precCvMin, precCvMax, '#ffffb2, #fecc5c, #fd8d3c, #e31a1c');
+                } catch (err) {
+                    alert('Error loading Precision (CV pct) data: ' + err.message);
+                    document.getElementById('precision-cv-toggle').checked = false;
+                    precCvVisible = false;
+                    document.getElementById('precision-cv-loading').style.display = 'none';
+                    return;
+                }
+                document.getElementById('precision-cv-loading').style.display = 'none';
+            }
+            if (precCvLayerAdded) {
+                map.setLayoutProperty('precision-cv-layer', 'visibility', 'visible');
+            }
+            document.getElementById('precision-cv-legend').style.display = 'block';
+            renderPrecisionCvViewport();
+        } else {
+            if (precCvLayerAdded) {
+                map.setLayoutProperty('precision-cv-layer', 'visibility', 'none');
+            }
+            document.getElementById('precision-cv-legend').style.display = 'none';
+        }
+    }
+
+    async function renderPrecisionCvViewport() {
+        if (!precCvInitialized || !precCvVisible) return;
+        precCvLayerAdded = await renderCOGViewport({
+            image: precCvImage, metadata: precCvMetadata, min: precCvMin, max: precCvMax,
+            sourceId: 'precision-cv-raster', layerId: 'precision-cv-layer',
+            colorRamp: YELLOW_RED_RAMP, layerAdded: precCvLayerAdded
+        });
+    }
+
+    // --- Debounced moveend listener for all COG layers ---
+    map.on('moveend', function () {
+        if (biomassLayerVisible) {
+            clearTimeout(renderTimeout);
+            renderTimeout = setTimeout(function () { renderBiomassViewport(); }, 200);
+        }
+        if (precMghaVisible) {
+            clearTimeout(precMghaRenderTimeout);
+            precMghaRenderTimeout = setTimeout(function () { renderPrecisionMghaViewport(); }, 200);
+        }
+        if (precCvVisible) {
+            clearTimeout(precCvRenderTimeout);
+            precCvRenderTimeout = setTimeout(function () { renderPrecisionCvViewport(); }, 200);
+        }
+    });
 
     // ============================================================
     // TREE CROWNS LAYER
