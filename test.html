@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pipeline Smoke Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; }
+    h1 { font-size: 1.4em; }
+    button { padding: 0.6em 1.2em; font-size: 1em; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    pre {
+      background: #111; color: #0f0; padding: 1em;
+      border-radius: 4px; white-space: pre-wrap; word-break: break-word;
+      max-height: 600px; overflow-y: auto; font-size: 0.85em;
+    }
+    .meta { color: #666; font-size: 0.85em; margin: 0.5em 0; }
+  </style>
+</head>
+<body>
+  <h1>Reforestation Eligibility Pipeline — Smoke Test</h1>
+  <p class="meta">
+    Click the button to POST a tiny test AOI to Cloud Run and tail the live log.
+  </p>
+
+  <button id="runBtn">Run Pipeline</button>
+  <p class="meta" id="meta">Idle.</p>
+  <pre id="out">(output will appear here)</pre>
+
+  <script>
+    // ── CONFIG ────────────────────────────────────────────────────────────
+    // TODO: paste your Cloud Run service URL here (no trailing slash):
+    const SERVICE_URL = "https://eligibility-pipeline-527567483631.us-central1.run.app";
+
+    // Tiny test AOI — small polygon in eastern Kentucky.
+    // Replace coords with whatever small area you want to smoke-test on.
+    const TEST_AOI = {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [[
+            [-82.500, 37.500],
+            [-82.495, 37.500],
+            [-82.495, 37.505],
+            [-82.500, 37.505],
+            [-82.500, 37.500]
+          ]]
+        }
+      }]
+    };
+
+    const SITE_NAME = "smoke_test_" + Date.now();
+    const POLL_INTERVAL_MS = 1000;
+
+    // ── HELPERS ──────────────────────────────────────────────────────────
+    const $btn  = document.getElementById("runBtn");
+    const $out  = document.getElementById("out");
+    const $meta = document.getElementById("meta");
+
+    function append(text) { $out.textContent += text; $out.scrollTop = $out.scrollHeight; }
+    function setOut(text) { $out.textContent = text; }
+    function setMeta(text) { $meta.textContent = text; }
+
+    // ── MAIN ─────────────────────────────────────────────────────────────
+    $btn.addEventListener("click", async () => {
+      if (SERVICE_URL.includes("PASTE_CLOUD_RUN_URL")) {
+        setOut("ERROR: set SERVICE_URL at the top of this file to your Cloud Run URL.");
+        return;
+      }
+
+      $btn.disabled = true;
+      setMeta("Submitting POST /run …");
+      setOut("");
+
+      let jobId;
+      try {
+        const r = await fetch(`${SERVICE_URL}/run?site_name=${encodeURIComponent(SITE_NAME)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(TEST_AOI)
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+        const data = await r.json();
+        jobId = Array.isArray(data.job_id) ? data.job_id[0] : data.job_id;
+        if (!jobId) throw new Error("No job_id in response: " + JSON.stringify(data));
+        setMeta(`Job started: ${jobId}`);
+        append(`=== Submitted ===\n${JSON.stringify(data, null, 2)}\n\n=== Live log ===\n`);
+      } catch (e) {
+        setMeta("Submit failed.");
+        setOut("Error during POST /run:\n" + e.message);
+        $btn.disabled = false;
+        return;
+      }
+
+      // ── Poll /logs/{id} for live feed ──────────────────────────────────
+      let offset = 0;
+      const poll = async () => {
+        try {
+          const r = await fetch(`${SERVICE_URL}/logs/${jobId}?offset=${offset}`);
+          if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+          const data = await r.json();
+          if (data.content) append(data.content);
+          offset = Array.isArray(data.next_offset) ? data.next_offset[0] : data.next_offset;
+          const status = Array.isArray(data.status) ? data.status[0] : data.status;
+          const done   = Array.isArray(data.done)   ? data.done[0]   : data.done;
+          setMeta(`Job ${jobId} — status: ${status}`);
+          if (done) {
+            append(`\n=== Job finished with status: ${status} ===\n`);
+            $btn.disabled = false;
+          } else {
+            setTimeout(poll, POLL_INTERVAL_MS);
+          }
+        } catch (e) {
+          append("\nError during /logs poll: " + e.message + "\n");
+          $btn.disabled = false;
+        }
+      };
+      poll();
+    });
+  </script>
+</body>
+</html>
