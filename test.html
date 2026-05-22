@@ -31,24 +31,35 @@
     // TODO: paste your Cloud Run service URL here (no trailing slash):
     const SERVICE_URL = "https://eligibility-pipeline-527567483631.us-central1.run.app";
 
-    // Tiny test AOI — small polygon in eastern Kentucky.
-    // Replace coords with whatever small area you want to smoke-test on.
+    // M & M Properties of Arkansas — EPSG:26915 (UTM Zone 15N)
     const TEST_AOI = {
-      type: "FeatureCollection",
-      features: [{
-        type: "Feature",
-        properties: {},
-        geometry: {
-          type: "Polygon",
-          coordinates: [[
-            [-82.500, 37.500],
-            [-82.495, 37.500],
-            [-82.495, 37.505],
-            [-82.500, 37.505],
-            [-82.500, 37.500]
-          ]]
+      "type": "FeatureCollection",
+      "name": "m_m_ark",
+      "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::26915" } },
+      "features": [
+        {
+          "type": "Feature",
+          "properties": { "id": "444e63ff-d40b-4e99-9b6f-e97b08692937", "Name": "M & M PROPERTIES OF ARK LLC" },
+          "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+              [ 593323.668511224444956, 4013346.885141836013645 ],
+              [ 592547.373025179607794, 4013350.242171329446137 ],
+              [ 592550.053803864866495, 4012946.125719047151506 ],
+              [ 591768.581973583670333, 4012951.606021989602596 ],
+              [ 591756.433270907728001, 4014163.133682675193995 ],
+              [ 593334.615009793196805, 4014152.189200000837445 ],
+              [ 593340.085146148921922, 4014554.952538555022329 ],
+              [ 593744.626522599603049, 4014552.646997755859047 ],
+              [ 593735.470695799216628, 4014151.840000684373081 ],
+              [ 594142.70587059261743,  4014151.467363886535168 ],
+              [ 594122.869928268715739, 4012937.257234542164952 ],
+              [ 593318.194529088563286, 4012944.12257212260738  ],
+              [ 593323.668511224444956, 4013346.885141836013645 ]
+            ]]
+          }
         }
-      }]
+      ]
     };
 
     const SITE_NAME = "smoke_test_" + Date.now();
