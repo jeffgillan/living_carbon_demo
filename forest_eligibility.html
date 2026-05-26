@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forest Eligibility — Plantable Acres</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css">
+    <script src="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js"></script>
+
+    <link rel="stylesheet" href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.5.0/dist/mapbox-gl-draw.css">
+    <script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.5.0/dist/mapbox-gl-draw.js"></script>
+
+    <script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        html, body, #map { height: 100%; width: 100%; }
+
+        #control-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 320px;
+            background: rgba(255, 255, 255, 0.94);
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+            padding: 16px;
+            z-index: 1;
+            max-height: calc(100vh - 20px);
+            overflow-y: auto;
+        }
+        #control-panel h2 {
+            font-size: 1.15rem;
+            margin-bottom: 4px;
+            color: #1a1a1a;
+        }
+        #control-panel h3 {
+            font-size: 0.95rem;
+            margin-bottom: 8px;
+            color: #1a1a1a;
+        }
+        .control-section {
+            margin-bottom: 14px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .control-section:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        .upload-label {
+            display: block;
+            font-size: 0.85rem;
+            color: #555;
+            margin-bottom: 6px;
+        }
+        input[type="file"],
+        input[type="text"],
+        input[type="password"] {
+            font-size: 0.85rem;
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }
+        button {
+            padding: 8px 16px;
+            background: #16a34a;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover { background: #15803d; }
+        button:disabled { background: #aaa; cursor: not-allowed; }
+
+        .meta {
+            font-size: 0.8rem;
+            color: #555;
+            margin-top: 6px;
+        }
+        .meta.error { color: #b91c1c; }
+
+        #log-pane {
+            display: none;
+            margin-top: 8px;
+            max-height: 220px;
+            overflow-y: auto;
+            background: #111;
+            color: #0f0;
+            font-size: 0.75rem;
+            padding: 8px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+
+        #result-panel {
+            display: none;
+            font-size: 0.9rem;
+        }
+        #result-panel .stat {
+            margin-bottom: 4px;
+        }
+        #download-link {
+            display: inline-block;
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: #15803d;
+        }
+
+        .back-link {
+            display: inline-block;
+            font-size: 0.8rem;
+            color: #555;
+            text-decoration: none;
+            margin-bottom: 10px;
+        }
+        .back-link:hover { color: #222; }
+
+        /* Draw tools in control panel */
+        #draw-tools-container .maplibregl-ctrl-group {
+            display: flex;
+            gap: 8px;
+            box-shadow: none;
+            background: none;
+        }
+        #draw-tools-container .maplibregl-ctrl-group button {
+            width: 36px;
+            height: 36px;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 0;
+            cursor: pointer;
+        }
+        #draw-tools-container .maplibregl-ctrl-group button:hover {
+            background-color: #f0f0f0;
+        }
+
+        /* MapLibre GL Draw cursor fixes */
+        .maplibregl-canvas-container.mouse-pointer .maplibregl-canvas { cursor: pointer; }
+        .maplibregl-canvas-container.mouse-add .maplibregl-canvas { cursor: crosshair; }
+        .maplibregl-canvas-container.mouse-move .maplibregl-canvas { cursor: move; }
+        .maplibregl-canvas-container.mouse-drag .maplibregl-canvas { cursor: grab; }
+        .maplibregl-canvas-container.mouse-rotate .maplibregl-canvas { cursor: crosshair; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <div id="control-panel">
+        <a href="index.html" class="back-link">&larr; Back</a>
+        <h2>Forest Eligibility</h2>
+        <p class="meta" style="margin-bottom:12px;">
+            Draw or upload an AOI, then submit to the reforestation-eligibility pipeline to compute plantable acres.
+        </p>
+
+        <div class="control-section">
+            <h3>1. Define AOI</h3>
+            <span class="upload-label">Draw a polygon:</span>
+            <div id="draw-tools-container"></div>
+            <span class="upload-label" style="margin-top:10px;">Or upload a GeoJSON (EPSG:4326):</span>
+            <input type="file" id="geojson-upload" accept=".geojson,.json">
+        </div>
+
+        <div class="control-section">
+            <h3>2. Run pipeline</h3>
+            <input type="text"     id="site-name" placeholder="Site name (e.g. my_property)">
+            <input type="password" id="passcode"  placeholder="Team passcode">
+            <button id="calc-btn" disabled>Calculate Plantable Acres</button>
+            <p class="meta" id="job-status">Draw or upload an AOI to begin.</p>
+            <pre id="log-pane"></pre>
+        </div>
+
+        <div class="control-section" id="result-panel">
+            <h3>Result</h3>
+            <div class="stat"><strong>AOI:</strong>            <span id="aoi-acres">—</span> ac</div>
+            <div class="stat"><strong>Eligible acres:</strong> <span id="eligible-acres">—</span> ac</div>
+            <div class="stat"><strong>% eligible:</strong>     <span id="pct-eligible">—</span></div>
+            <a id="download-link" href="#" download>Download GeoJSON</a>
+        </div>
+    </div>
+
+    <script>
+    // ================================================================
+    // CONFIG
+    // ================================================================
+    const BOUNCER_URL       = "https://pipeline-bouncer-527567483631.us-central1.run.app";
+    // TODO: replace with the actual GCS_BUCKET value used by the Cloud Run service.
+    const GCS_BUCKET        = "REPLACE_WITH_BUCKET_NAME";
+    const GCS_OUTPUT_PREFIX = "outputs";
+
+    const MAP_CENTER          = [-98, 39];
+    const MAP_ZOOM            = 4;
+    const POLL_INTERVAL_MS    = 1000;
+    const NOT_READY_TIMEOUT_S = 30;
+
+    // ================================================================
+    // STATE
+    // ================================================================
+    let draw            = null;
+    let currentAOI      = null;   // { type: "FeatureCollection", features: [Feature] } in EPSG:4326
+    let activeJob       = null;   // { id, siteName, submittedAt }
+    let jobInFlight     = false;
+
+    // ================================================================
+    // DOM HELPERS
+    // ================================================================
+    const $btn      = document.getElementById("calc-btn");
+    const $status   = document.getElementById("job-status");
+    const $log      = document.getElementById("log-pane");
+    const $passcode = document.getElementById("passcode");
+    const $site     = document.getElementById("site-name");
+    const $result   = document.getElementById("result-panel");
+
+    function setStatus(msg, isError) {
+        $status.textContent = msg;
+        $status.classList.toggle("error", !!isError);
+    }
+    function appendLog(text) {
+        if ($log.style.display === "none") $log.style.display = "block";
+        $log.textContent += text;
+        $log.scrollTop = $log.scrollHeight;
+    }
+    function clearLog() {
+        $log.textContent = "";
+        $log.style.display = "none";
+    }
+
+    // ================================================================
+    // MAP INITIALIZATION
+    // ================================================================
+    const map = new maplibregl.Map({
+        container: 'map',
+        style: {
+            version: 8,
+            sources: {
+                'esri-imagery': {
+                    type: 'raster',
+                    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+                    tileSize: 256,
+                    attribution: 'Tiles &copy; Esri'
+                }
+            },
+            layers: [{ id: 'esri-imagery-layer', type: 'raster', source: 'esri-imagery' }]
+        },
+        center: MAP_CENTER,
+        zoom: MAP_ZOOM
+    });
+    map.addControl(new maplibregl.NavigationControl(), 'bottom-left');
+
+    // ================================================================
+    // DRAW TOOL SETUP
+    // ================================================================
+    map.on('load', function () {
+        // MapboxDraw → MapLibre class patch
+        MapboxDraw.constants.classes.CANVAS         = 'maplibregl-canvas';
+        MapboxDraw.constants.classes.CONTROL_BASE   = 'maplibregl-ctrl';
+        MapboxDraw.constants.classes.CONTROL_PREFIX = 'maplibregl-ctrl-';
+        MapboxDraw.constants.classes.CONTROL_GROUP  = 'maplibregl-ctrl-group';
+        MapboxDraw.constants.classes.ATTRIBUTION    = 'maplibregl-ctrl-attrib';
+
+        draw = new MapboxDraw({
+            displayControlsDefault: false,
+            controls: { polygon: true, trash: true },
+            styles: [
+                { id: 'gl-draw-polygon-fill-inactive', type: 'fill',
+                  filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']],
+                  paint: { 'fill-color': '#3388ff', 'fill-opacity': 0.25 } },
+                { id: 'gl-draw-polygon-fill-active', type: 'fill',
+                  filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']],
+                  paint: { 'fill-color': '#3388ff', 'fill-opacity': 0.25 } },
+                { id: 'gl-draw-polygon-stroke-inactive', type: 'line',
+                  filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'mode', 'static']],
+                  paint: { 'line-color': '#1d4ed8', 'line-width': 2 } },
+                { id: 'gl-draw-polygon-stroke-active', type: 'line',
+                  filter: ['all', ['==', 'active', 'true'], ['==', '$type', 'Polygon']],
+                  paint: { 'line-color': '#1d4ed8', 'line-width': 2 } },
+                { id: 'gl-draw-polygon-midpoint', type: 'circle',
+                  filter: ['all', ['==', '$type', 'Point'], ['==', 'meta', 'midpoint']],
+                  paint: { 'circle-radius': 4, 'circle-color': '#1d4ed8' } },
+                { id: 'gl-draw-point-point-stroke-inactive', type: 'circle',
+                  filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']],
+                  paint: { 'circle-radius': 5, 'circle-color': '#fff', 'circle-stroke-width': 2, 'circle-stroke-color': '#1d4ed8' } },
+                { id: 'gl-draw-point-inactive', type: 'circle',
+                  filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Point'], ['==', 'meta', 'feature'], ['!=', 'mode', 'static']],
+                  paint: { 'circle-radius': 3, 'circle-color': '#1d4ed8' } },
+                { id: 'gl-draw-point-active', type: 'circle',
+                  filter: ['all', ['==', '$type', 'Point'], ['!=', 'meta', 'midpoint'], ['==', 'active', 'true']],
+                  paint: { 'circle-radius': 6, 'circle-color': '#fff', 'circle-stroke-width': 2, 'circle-stroke-color': '#1d4ed8' } },
+                { id: 'gl-draw-line-active', type: 'line',
+                  filter: ['all', ['==', '$type', 'LineString'], ['==', 'active', 'true']],
+                  paint: { 'line-color': '#1d4ed8', 'line-width': 2, 'line-dasharray': [0.2, 2] } },
+                { id: 'gl-draw-polygon-and-line-vertex-stroke-inactive', type: 'circle',
+                  filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']],
+                  paint: { 'circle-radius': 6, 'circle-color': '#fff' } },
+                { id: 'gl-draw-polygon-and-line-vertex-inactive', type: 'circle',
+                  filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point'], ['!=', 'mode', 'static']],
+                  paint: { 'circle-radius': 4, 'circle-color': '#1d4ed8' } }
+            ]
+        });
+        map.addControl(draw, 'top-left');
+
+        // Move draw toolbar into the control panel
+        const drawBar = document.querySelector('.maplibregl-ctrl-group.maplibregl-ctrl');
+        if (drawBar) document.getElementById('draw-tools-container').appendChild(drawBar);
+
+        map.on('draw.create', onDrawCreate);
+        map.on('draw.update', onDrawUpdate);
+        map.on('draw.delete', onDrawDelete);
+    });
+
+    function onDrawCreate(e) {
+        // Enforce single polygon
+        const all = draw.getAll();
+        if (all.features.length > 1) {
+            const latestId = e.features[0].id;
+            all.features.forEach(f => { if (f.id !== latestId) draw.delete(f.id); });
+        }
+        removeUploadedAOIFromMap();
+        clearPreviousResult();
+        setAOI(e.features[0]);
+    }
+    function onDrawUpdate(e) {
+        clearPreviousResult();
+        setAOI(e.features[0]);
+    }
+    function onDrawDelete() {
+        currentAOI = null;
+        clearPreviousResult();
+        refreshCalcButton();
+        setStatus("Draw or upload an AOI to begin.");
+    }
+
+    function setAOI(feature) {
+        // Always store as a FeatureCollection in EPSG:4326
+        currentAOI = { type: "FeatureCollection", features: [feature] };
+        refreshCalcButton();
+        setStatus("AOI ready. Enter passcode and click Calculate.");
+    }
+
+    // ================================================================
+    // GEOJSON UPLOAD
+    // ================================================================
+    document.getElementById('geojson-upload').addEventListener('change', function (event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (e) {
+            try {
+                const geojson = JSON.parse(e.target.result);
+
+                // Warn if a non-4326 CRS is declared
+                if (geojson.crs && geojson.crs.properties && geojson.crs.properties.name) {
+                    const crsName = geojson.crs.properties.name;
+                    if (!/CRS84|4326/i.test(crsName)) {
+                        alert("Warning: uploaded GeoJSON declares CRS " + crsName +
+                              ". This app expects EPSG:4326. The pipeline reprojects internally, " +
+                              "but the polygon may render in the wrong place on the map.");
+                    }
+                }
+
+                const feature = validateGeoJSON(geojson);
+                if (!feature) {
+                    alert('Invalid GeoJSON: must contain a Polygon or MultiPolygon geometry.');
+                    return;
+                }
+
+                if (draw) draw.deleteAll();
+                removeUploadedAOIFromMap();
+                clearPreviousResult();
+
+                addUploadedAOIToMap(feature);
+
+                const bbox = turf.bbox(feature);
+                map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50 });
+
+                setAOI(feature);
+            } catch (err) {
+                alert('Error reading GeoJSON file: ' + err.message);
+            }
+        };
+        reader.readAsText(file);
+    });
+
+    function validateGeoJSON(geojson) {
+        let geometry = null;
+
+        if (geojson.type === 'FeatureCollection' && geojson.features) {
+            for (let i = 0; i < geojson.features.length; i++) {
+                const g = geojson.features[i].geometry;
+                if (g && (g.type === 'Polygon' || g.type === 'MultiPolygon')) {
+                    geometry = g;
+                    break;
+                }
+            }
+        } else if (geojson.type === 'Feature' && geojson.geometry) {
+            if (geojson.geometry.type === 'Polygon' || geojson.geometry.type === 'MultiPolygon') {
+                geometry = geojson.geometry;
+            }
+        } else if (geojson.type === 'Polygon' || geojson.type === 'MultiPolygon') {
+            geometry = geojson;
+        }
+
+        if (!geometry) return null;
+        return { type: 'Feature', geometry: geometry, properties: {} };
+    }
+
+    function addUploadedAOIToMap(feature) {
+        map.addSource('uploaded-aoi', { type: 'geojson', data: feature });
+        map.addLayer({
+            id: 'uploaded-aoi-fill', type: 'fill', source: 'uploaded-aoi',
+            paint: { 'fill-color': '#3388ff', 'fill-opacity': 0.2 }
+        });
+        map.addLayer({
+            id: 'uploaded-aoi-outline', type: 'line', source: 'uploaded-aoi',
+            paint: { 'line-color': '#1d4ed8', 'line-width': 2 }
+        });
+    }
+    function removeUploadedAOIFromMap() {
+        ['uploaded-aoi-fill', 'uploaded-aoi-outline'].forEach(id => {
+            if (map.getLayer(id)) map.removeLayer(id);
+        });
+        if (map.getSource('uploaded-aoi')) map.removeSource('uploaded-aoi');
+    }
+
+    // ================================================================
+    // CALC BUTTON / VALIDATION
+    // ================================================================
+    function refreshCalcButton() {
+        const ready = !jobInFlight && !!currentAOI && $passcode.value.trim().length > 0;
+        $btn.disabled = !ready;
+    }
+    $passcode.addEventListener('input', refreshCalcButton);
+    $site.addEventListener('input', refreshCalcButton);
+
+    function sanitizeSite(raw) {
+        const cleaned = (raw || "").trim().replace(/[^A-Za-z0-9_-]/g, "_");
+        if (cleaned.length > 0) return cleaned;
+        return "aoi_" + Date.now();
+    }
+
+    // ================================================================
+    // SUBMIT + POLL
+    // ================================================================
+    $btn.addEventListener('click', runPipeline);
+
+    async function runPipeline() {
+        if (!currentAOI) return;
+        const passcode = $passcode.value.trim();
+        if (!passcode) { alert("Please enter the team passcode."); return; }
+
+        const siteName = sanitizeSite($site.value);
+        jobInFlight = true;
+        refreshCalcButton();
+        clearLog();
+        clearPreviousResult();
+        setStatus("Submitting job …");
+
+        // POST /run via bouncer
+        let jobId;
+        try {
+            const r = await fetch(`${BOUNCER_URL}/run?site_name=${encodeURIComponent(siteName)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ passcode: passcode, ...currentAOI })
+            });
+            if (!r.ok) {
+                const errMsg = await r.text();
+                throw new Error(`HTTP ${r.status}: ${errMsg}`);
+            }
+            const responseText = await r.text();
+            const jsonStart = responseText.indexOf("{");
+            if (jsonStart === -1) throw new Error("Could not parse bouncer response.");
+            const data = JSON.parse(responseText.substring(jsonStart));
+            jobId = Array.isArray(data.job_id) ? data.job_id[0] : data.job_id;
+            if (!jobId) throw new Error("No job_id in response.");
+
+            activeJob = { id: jobId, siteName: siteName, submittedAt: new Date() };
+            setStatus(`Job started: ${jobId}`);
+            appendLog(`=== Submitted ===\n${JSON.stringify(data, null, 2)}\n\n=== Live log ===\n`);
+        } catch (err) {
+            setStatus("Submit failed: " + err.message, true);
+            jobInFlight = false;
+            refreshCalcButton();
+            return;
+        }
+
+        pollLogs(jobId, passcode);
+    }
+
+    function pollLogs(jobId, passcode) {
+        let offset = 0;
+        let notReadySecs = 0;
+        let lastStatus = "queued";
+
+        const tick = async () => {
+            try {
+                const r = await fetch(`${BOUNCER_URL}/logs/${jobId}?offset=${offset}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ passcode: passcode })
+                });
+
+                if (r.status === 404) {
+                    notReadySecs++;
+                    if (notReadySecs <= NOT_READY_TIMEOUT_S) {
+                        setStatus(`Job ${jobId} — waiting for process to start (${notReadySecs}s)…`);
+                        setTimeout(tick, POLL_INTERVAL_MS);
+                    } else {
+                        appendLog("\nTimed out waiting for pipeline to start (30s).\n");
+                        setStatus("Pipeline failed to start within 30s.", true);
+                        jobInFlight = false;
+                        refreshCalcButton();
+                    }
+                    return;
+                }
+                if (!r.ok) {
+                    const errBody = await r.text();
+                    throw new Error(`HTTP ${r.status}: ${errBody}`);
+                }
+
+                const text = await r.text();
+                const jsonStart = text.indexOf("{");
+                if (jsonStart === -1) throw new Error("Could not parse logs response.");
+                const data = JSON.parse(text.substring(jsonStart));
+
+                if (data.content) appendLog(data.content);
+                offset = Array.isArray(data.next_offset) ? data.next_offset[0] : data.next_offset;
+                const status = Array.isArray(data.status) ? data.status[0] : data.status;
+                const done   = Array.isArray(data.done)   ? data.done[0]   : data.done;
+                lastStatus = status;
+                setStatus(`Job ${jobId} — status: ${status}`);
+
+                if (done) {
+                    appendLog(`\n=== Job finished with status: ${status} ===\n`);
+                    if (status === "completed") {
+                        await fetchAndDisplayResult(jobId, activeJob.siteName);
+                    } else {
+                        setStatus(`Job ended with status: ${status}`, true);
+                    }
+                    jobInFlight = false;
+                    refreshCalcButton();
+                } else {
+                    setTimeout(tick, POLL_INTERVAL_MS);
+                }
+            } catch (err) {
+                appendLog("\nPoll error: " + err.message + "\n");
+                setStatus("Poll error: " + err.message, true);
+                jobInFlight = false;
+                refreshCalcButton();
+            }
+        };
+
+        tick();
+    }
+
+    // ================================================================
+    // FETCH RESULT FROM GCS
+    // ================================================================
+    function buildResultUrl(jobId, siteName, dateStr) {
+        return `https://storage.googleapis.com/${GCS_BUCKET}/${GCS_OUTPUT_PREFIX}` +
+               `/${jobId}/${jobId}/final/${siteName}_eligible_area_${dateStr}.geojson`;
+    }
+
+    function candidateDates() {
+        // The integration step uses Sys.Date() on the (UTC) server. Try server-UTC
+        // today and yesterday to be resilient to midnight crossings.
+        const fmt = (d) => d.toISOString().slice(0, 10);
+        const today = new Date();
+        const yesterday = new Date(today.getTime() - 24 * 3600 * 1000);
+        const tomorrow  = new Date(today.getTime() + 24 * 3600 * 1000);
+        return [fmt(today), fmt(yesterday), fmt(tomorrow)];
+    }
+
+    async function fetchAndDisplayResult(jobId, siteName) {
+        if (GCS_BUCKET === "REPLACE_WITH_BUCKET_NAME") {
+            setStatus("GCS_BUCKET constant not configured in forest_eligibility.html.", true);
+            return;
+        }
+
+        setStatus("Job complete — fetching result from GCS …");
+
+        let resultUrl = null;
+        let geojson   = null;
+        const tried   = [];
+
+        for (const date of candidateDates()) {
+            const url = buildResultUrl(jobId, siteName, date);
+            tried.push(url);
+            try {
+                const r = await fetch(url);
+                if (r.ok) {
+                    geojson   = await r.json();
+                    resultUrl = url;
+                    break;
+                }
+            } catch (err) {
+                // CORS or network — keep trying other dates
+            }
+        }
+
+        if (!geojson) {
+            setStatus("Result GeoJSON not found at expected URL.", true);
+            appendLog("\nTried URLs:\n" + tried.join("\n") + "\n" +
+                      "If these 404, check the GCS bucket. If they fail with CORS, " +
+                      "the bucket needs a CORS policy allowing GET from this origin.\n");
+            return;
+        }
+
+        addResultToMap(geojson);
+        displayAcreage(geojson, resultUrl);
+        setStatus(`Result loaded for job ${jobId}.`);
+    }
+
+    function addResultToMap(geojson) {
+        removeResultFromMap();
+        map.addSource('plantable-result', { type: 'geojson', data: geojson });
+        map.addLayer({
+            id: 'plantable-result-fill', type: 'fill', source: 'plantable-result',
+            paint: { 'fill-color': '#22c55e', 'fill-opacity': 0.45 }
+        });
+        map.addLayer({
+            id: 'plantable-result-outline', type: 'line', source: 'plantable-result',
+            paint: { 'line-color': '#15803d', 'line-width': 2 }
+        });
+
+        // Fit map to combined AOI + result
+        try {
+            const fc = { type: "FeatureCollection",
+                         features: [...(currentAOI?.features || []),
+                                    ...((geojson.features) || [geojson])] };
+            const bbox = turf.bbox(fc);
+            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50 });
+        } catch (e) { /* ignore */ }
+    }
+
+    function removeResultFromMap() {
+        ['plantable-result-fill', 'plantable-result-outline'].forEach(id => {
+            if (map.getLayer(id)) map.removeLayer(id);
+        });
+        if (map.getSource('plantable-result')) map.removeSource('plantable-result');
+    }
+
+    function displayAcreage(geojson, downloadUrl) {
+        const sqmToAcres = (m2) => m2 / 4046.8564224;
+        const eligibleSqm = turf.area(geojson);
+        const aoiSqm      = currentAOI ? turf.area(currentAOI) : 0;
+        const eligibleAc  = sqmToAcres(eligibleSqm);
+        const aoiAc       = sqmToAcres(aoiSqm);
+        const pct         = aoiAc > 0 ? (100 * eligibleAc / aoiAc) : 0;
+
+        document.getElementById('aoi-acres').textContent      = aoiAc.toFixed(2);
+        document.getElementById('eligible-acres').textContent = eligibleAc.toFixed(2);
+        document.getElementById('pct-eligible').textContent   = pct.toFixed(1) + "%";
+        const link = document.getElementById('download-link');
+        link.href = downloadUrl;
+
+        $result.style.display = "block";
+    }
+
+    function clearPreviousResult() {
+        removeResultFromMap();
+        $result.style.display = "none";
+    }
+    </script>
+</body>
+</html>
