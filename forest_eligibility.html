@@ -341,14 +341,17 @@
     }
 
     function setAOI(feature) {
-        // Store as a FeatureCollection in EPSG:4326. Include `name` and `crs`
-        // keys to match the shape test_bouncer.html sends (some downstream
-        // consumers may require them).
+        // RFC 7946: GeoJSON is implicitly WGS84 lon/lat — do NOT include a `crs`
+        // member (the deprecated `crs` member can cause sf::st_read to mis-handle
+        // coordinates). Strip Mapbox-Draw-specific id and ensure properties exists.
+        const cleanFeature = {
+            type: "Feature",
+            properties: feature.properties || {},
+            geometry: feature.geometry
+        };
         currentAOI = {
             type: "FeatureCollection",
-            name: "aoi",
-            crs: { type: "name", properties: { name: "urn:ogc:def:crs:OGC:1.3:CRS84" } },
-            features: [feature]
+            features: [cleanFeature]
         };
         refreshCalcButton();
         setStatus("AOI ready. Enter passcode and click Calculate.");
