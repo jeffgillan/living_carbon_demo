@@ -513,24 +513,26 @@
             return;
         }
 
-        pollLogs(jobId, passcode);
+        pollStatus(jobId, passcode);
     }
 
-    function pollLogs(jobId, passcode) {
-        let offset = 0;
+    // Poll /status/<id> rather than /logs/<id> — the bouncer currently returns
+    // 405 for POST /logs. /status returns structured progress (status,
+    // current_step, error) which is enough to drive the UI and surface failures.
+    function pollStatus(jobId, passcode) {
         let notReadySecs = 0;
-        let lastStatus = "queued";
+        let lastSerialized = "";
 
         const tick = async () => {
             try {
-                const r = await fetch(`${BOUNCER_URL}/logs/${jobId}?offset=${offset}`, {
+                const r = await fetch(`${BOUNCER_URL}/status/${jobId}`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ passcode: passcode })
                 });
 
                 if (r.status === 404) {
-                    notReadySecs++;
+                    notReadySecs += Math.max(1, Math.round(POLL_INTERVAL_MS / 1000));
                     if (notReadySecs <= NOT_READY_TIMEOUT_S) {
                         setStatus(`Job ${jobId} — waiting for process to start (${notReadySecs}s)…`);
                         setTimeout(tick, POLL_INTERVAL_MS);
@@ -549,27 +551,39 @@
 
                 const text = await r.text();
                 const jsonStart = text.indexOf("{");
-                if (jsonStart === -1) throw new Error("Could not parse logs response.");
+                if (jsonStart === -1) throw new Error("Could not parse status response.");
                 const data = JSON.parse(text.substring(jsonStart));
 
-                if (data.content) appendLog(data.content);
-                offset = Array.isArray(data.next_offset) ? data.next_offset[0] : data.next_offset;
-                const status = Array.isArray(data.status) ? data.status[0] : data.status;
-                const done   = Array.isArray(data.done)   ? data.done[0]   : data.done;
-                lastStatus = status;
-                setStatus(`Job ${jobId} — status: ${status}`);
+                const unwrap     = (v) => Array.isArray(v) ? v[0] : v;
+                const status      = unwrap(data.status);
+                const currentStep = unwrap(data.current_step);
+                const errorMsg    = unwrap(data.error);
 
-                if (done) {
+                // Print only when something changed, plus dump the full payload
+                // on the terminal transitions so we can see the error verbatim.
+                const serialized = JSON.stringify({ status, currentStep, errorMsg });
+                if (serialized !== lastSerialized) {
+                    lastSerialized = serialized;
+                    appendLog(`[${new Date().toLocaleTimeString()}] status=${status}` +
+                              (currentStep ? `, step=${currentStep}` : "") + "\n");
+                    if (errorMsg) appendLog(`  error: ${errorMsg}\n`);
+                }
+
+                setStatus(`Job ${jobId} — ${status}${currentStep ? " · " + currentStep : ""}`);
+
+                const terminal = (status === "completed" || status === "error");
+                if (terminal) {
+                    appendLog(`\n=== Full status payload ===\n${JSON.stringify(data, null, 2)}\n`);
                     appendLog(`\n=== Job finished with status: ${status} ===\n`);
                     if (status === "completed") {
                         await fetchAndDisplayResult(jobId, activeJob.siteName);
                     } else {
-                        setStatus(`Job ended with status: ${status}`, true);
+                        setStatus(`Job failed: ${errorMsg || status}`, true);
                     }
                     jobInFlight = false;
                     refreshCalcButton();
                 } else {
-                    setTimeout(tick, POLL_INTERVAL_MS);
+                    setTimeout(tick, POLL_INTERVAL_MS * 2);
                 }
             } catch (err) {
                 appendLog("\nPoll error: " + err.message + "\n");
