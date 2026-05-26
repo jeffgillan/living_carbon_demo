@@ -195,7 +195,7 @@
     // ================================================================
     const BOUNCER_URL       = "https://pipeline-bouncer-527567483631.us-central1.run.app";
     // TODO: replace with the actual GCS_BUCKET value used by the Cloud Run service.
-    const GCS_BUCKET        = "REPLACE_WITH_BUCKET_NAME";
+    const GCS_BUCKET        = "livingcarbon_bucket";
     const GCS_OUTPUT_PREFIX = "outputs";
 
     const MAP_CENTER          = [-98, 39];
@@ -341,8 +341,15 @@
     }
 
     function setAOI(feature) {
-        // Always store as a FeatureCollection in EPSG:4326
-        currentAOI = { type: "FeatureCollection", features: [feature] };
+        // Store as a FeatureCollection in EPSG:4326. Include `name` and `crs`
+        // keys to match the shape test_bouncer.html sends (some downstream
+        // consumers may require them).
+        currentAOI = {
+            type: "FeatureCollection",
+            name: "aoi",
+            crs: { type: "name", properties: { name: "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+            features: [feature]
+        };
         refreshCalcButton();
         setStatus("AOI ready. Enter passcode and click Calculate.");
     }
