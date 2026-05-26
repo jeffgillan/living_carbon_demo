@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pipeline Smoke Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; }
+    h1 { font-size: 1.4em; }
+    button { padding: 0.6em 1.2em; font-size: 1em; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    pre {
+      background: #111; color: #0f0; padding: 1em;
+      border-radius: 4px; white-space: pre-wrap; word-break: break-word;
+      max-height: 600px; overflow-y: auto; font-size: 0.85em;
+    }
+    .meta { color: #666; font-size: 0.85em; margin: 0.5em 0; }
+    
+    /* Layout styling for the new passcode field */
+    .controls-row { display: flex; align-items: center; gap: 0.75em; margin: 1.5em 0 0.5em 0; }
+    input[type="password"] { padding: 0.6em; font-size: 1em; border: 1px solid #ccc; border-radius: 4px; min-width: 220px; }
+  </style>
+</head>
+<body>
+  <h1>Reforestation Eligibility Pipeline — Smoke Test</h1>
+  <p class="meta">
+    Enter the team passcode and click the button to trigger a tiny test AOI via the proxy security layer.
+  </p>
+
+  <div class="controls-row">
+    <input type="password" id="passcodeField" placeholder="Enter Team Passcode">
+    <button id="runBtn">Run Pipeline</button>
+  </div>
+  
+  <p class="meta" id="meta">Idle.</p>
+  <pre id="out">(output will appear here)</pre>
+
+  <script>
+    // ── CONFIG ────────────────────────────────────────────────────────────
+    // Your verified backend infrastructure endpoints
+    const BOUNCER_URL = "https://pipeline-bouncer-527567483631.us-central1.run.app";
+
+    // M & M Properties of Arkansas — EPSG:26915 (UTM Zone 15N)
+    const TEST_AOI = {
+      "type": "FeatureCollection",
+      "name": "m_m_ark",
+      "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::26915" } },
+      "features": [
+        {
+          "type": "Feature",
+          "properties": { "id": "444e63ff-d40b-4e99-9b6f-e97b08692937", "Name": "M & M PROPERTIES OF ARK LLC" },
+          "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+              [ 593323.668511224444956, 4013346.885141836013645 ],
+              [ 592547.373025179607794, 4013350.242171329446137 ],
+              [ 592550.053803864866495, 4012946.125719047151506 ],
+              [ 591768.581973583670333, 4012951.606021989602596 ],
+              [ 591756.433270907728001, 4014163.133682675193995 ],
+              [ 593340.085146148921922, 4014554.952538555022329 ],
+              [ 593744.626522599603049, 4014552.646997755859047 ],
+              [ 593735.470695799216628, 4014151.840000684373081 ],
+              [ 594142.70587059261743,  4014151.467363886535168 ],
+              [ 594122.869928268715739, 4012937.257234542164952 ],
+              [ 593318.194529088563286, 4012944.12257212260738  ],
+              [ 593323.668511224444956, 4013346.885141836013645 ]
+            ]]
+          }
+        }
+      ]
+    };
+
+    const SITE_NAME = "smoke_test_" + Date.now();
+    const POLL_INTERVAL_MS = 1000;
+
+    // ── HELPERS ──────────────────────────────────────────────────────────
+    const $btn  = document.getElementById("runBtn");
+    const $out  = document.getElementById("out");
+    const $meta = document.getElementById("meta");
+    const $pass = document.getElementById("passcodeField");
+
+    function append(text) { $out.textContent += text; $out.scrollTop = $out.scrollHeight; }
+    function setOut(text) { $out.textContent = text; }
+    function setMeta(text) { $meta.textContent = text; }
+
+    // ── MAIN ─────────────────────────────────────────────────────────────
+    $btn.addEventListener("click", async () => {
+      const passcode = $pass.value.trim();
+      
+      if (!passcode) {
+        alert("Please enter the team passcode first.");
+        return;
+      }
+
+      $btn.disabled = true;
+      setMeta("Verifying credential with proxy bouncer …");
+      setOut("");
+
+      let jobId;
+      try {
+        // Build URL parameters for pipeline run execution
+        const targetUrl = `/run?site_name=${encodeURIComponent(SITE_NAME)}`;
+        
+        // POST to the pipeline-bouncer function passing target path and authorization passcode
+        const r = await fetch(BOUNCER_URL + targetUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            passcode: passcode,
+            ...TEST_AOI
+          })
+        });
+        
+        if (!r.ok) {
+          const errMsg = await r.text();
+          throw new Error(`${r.status} (${errMsg})`);
+        }
+        
+        // Extract return details forwarded back via Cloud Run response string
+        const responseData = await r.text();
+        
+        // Parse custom response context out of string output
+        const jsonStartIndex = responseData.indexOf("{");
+        if (jsonStartIndex === -1) throw new Error("Could not parse container job initialization sequence string.");
+        
+        const cleanJsonStr = responseData.substring(jsonStartIndex);
+        const data = JSON.parse(cleanJsonStr);
+        
+        jobId = Array.isArray(data.job_id) ? data.job_id[0] : data.job_id;
+        if (!jobId) throw new Error("No job_id in response payload context.");
+        
+        setMeta(`Job started: ${jobId}`);
+        append(`=== Submitted ===\n${JSON.stringify(data, null, 2)}\n\n=== Live log ===\n`);
+      } catch (e) {
+        setMeta("Pipeline authorization or execution failed.");
+        setOut("Error during secure bouncer verification:\n" + e.message);
+        $btn.disabled = false;
+        return;
+      }
+
+      // ── Poll /logs/{id} through proxy bouncer for live feed ─────────────────
+      let offset = 0;
+      let notReadySecs = 0;
+      const NOT_READY_TIMEOUT_S = 30;
+
+      const poll = async () => {
+        try {
+          const targetLogUrl = `/logs/${jobId}?offset=${offset}`;
+          
+          const r = await fetch(BOUNCER_URL + targetLogUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ passcode: passcode })
+          });
+          
+          if (r.status === 404) {
+            notReadySecs++;
+            if (notReadySecs <= NOT_READY_TIMEOUT_S) {
+              setMeta(`Job ${jobId} — waiting for process to start (${notReadySecs}s)…`);
+              setTimeout(poll, POLL_INTERVAL_MS);
+            } else {
+              append("\nTimed out waiting for pipeline to start (30s). Check Cloud Run logs.\n");
+              $btn.disabled = false;
+            }
+            return;
+          }
+          
+          if (!r.ok) {
+            const errLogMsg = await r.text();
+            throw new Error(`${r.status} ${errLogMsg}`);
+          }
+          
+          const responseLogData = await r.text();
+          const logJsonStartIndex = responseLogData.indexOf("{");
+          const cleanLogJsonStr = responseLogData.substring(logJsonStartIndex);
+          const data = JSON.parse(cleanLogJsonStr);
+          
+          if (data.content) append(data.content);
+          offset = Array.isArray(data.next_offset) ? data.next_offset[0] : data.next_offset;
+          const status = Array.isArray(data.status) ? data.status[0] : data.status;
+          const done   = Array.isArray(data.done)   ? data.done[0]   : data.done;
+          
+          setMeta(`Job ${jobId} — status: ${status}`);
+          if (done) {
+            append(`\n=== Job finished with status: ${status} ===\n`);
+            $btn.disabled = false;
+          } else {
+            setTimeout(poll, POLL_INTERVAL_MS);
+          }
+        } catch (e) {
+          append("\nError during protected /logs telemetry cycle: " + e.message + "\n");
+          $btn.disabled = false;
+        }
+      };
+      
+      // Fire log polling sequence
+      poll();
+    });
+  </script>
+</body>
+</html>
