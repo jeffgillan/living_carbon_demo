@@ -476,13 +476,21 @@
         clearPreviousResult();
         setStatus("Submitting job …");
 
+        // Build the request body and surface it for debugging — the pipeline
+        // saves this verbatim to input_aoi.geojson, so seeing it here removes
+        // a layer of guesswork when EE rejects the geometry downstream.
+        const requestBody = { passcode: passcode, ...currentAOI };
+        const requestBodyForLog = { ...requestBody, passcode: "[redacted]" };
+        appendLog("=== Request body (passcode redacted) ===\n" +
+                  JSON.stringify(requestBodyForLog, null, 2) + "\n\n");
+
         // POST /run via bouncer
         let jobId;
         try {
             const r = await fetch(`${BOUNCER_URL}/run?site_name=${encodeURIComponent(siteName)}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ passcode: passcode, ...currentAOI })
+                body: JSON.stringify(requestBody)
             });
             if (!r.ok) {
                 const errMsg = await r.text();
