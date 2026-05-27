@@ -115,6 +115,14 @@
             font-size: 0.85rem;
             color: #15803d;
         }
+        .layer-toggle {
+            display: block;
+            margin-top: 8px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            user-select: none;
+        }
+        .layer-toggle input { margin-right: 6px; vertical-align: middle; }
 
         .back-link {
             display: inline-block;
@@ -185,6 +193,7 @@
             <div class="stat"><strong>AOI:</strong>            <span id="aoi-acres">—</span> ac</div>
             <div class="stat"><strong>Eligible acres:</strong> <span id="eligible-acres">—</span> ac</div>
             <div class="stat"><strong>% eligible:</strong>     <span id="pct-eligible">—</span></div>
+            <label class="layer-toggle"><input type="checkbox" id="result-toggle" checked> Show eligible area</label>
             <a id="download-link" href="#" download>Download GeoJSON</a>
         </div>
     </div>
@@ -210,6 +219,7 @@
     let currentAOI      = null;   // { type: "FeatureCollection", features: [Feature] } in EPSG:4326
     let activeJob       = null;   // { id, siteName, submittedAt }
     let jobInFlight     = false;
+    let resultObjectUrl = null;   // blob: URL backing the Download GeoJSON link
 
     // ================================================================
     // DOM HELPERS
@@ -458,6 +468,14 @@
     $passcode.addEventListener('input', refreshCalcButton);
     $site.addEventListener('input', refreshCalcButton);
 
+    // Toggle the rendered eligible-area layer on/off.
+    document.getElementById('result-toggle').addEventListener('change', function (e) {
+        const v = e.target.checked ? 'visible' : 'none';
+        ['plantable-result-fill', 'plantable-result-outline'].forEach(id => {
+            if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
+        });
+    });
+
     function sanitizeSite(raw) {
         const cleaned = (raw || "").trim().replace(/[^A-Za-z0-9_-]/g, "_");
         if (cleaned.length > 0) return cleaned;
@@ -678,6 +696,8 @@
 
     function addResultToMap(geojson) {
         removeResultFromMap();
+        // New result is added visible — keep the toggle in sync.
+        document.getElementById('result-toggle').checked = true;
         map.addSource('plantable-result', { type: 'geojson', data: geojson });
         map.addLayer({
             id: 'plantable-result-fill', type: 'fill', source: 'plantable-result',
@@ -716,8 +736,15 @@
         document.getElementById('aoi-acres').textContent      = aoiAc.toFixed(2);
         document.getElementById('eligible-acres').textContent = eligibleAc.toFixed(2);
         document.getElementById('pct-eligible').textContent   = pct.toFixed(1) + "%";
+        // Download the in-memory GeoJSON via a same-origin blob: URL. Pointing the
+        // <a download> at the cross-origin GCS URL doesn't work — browsers ignore
+        // `download` cross-origin and navigate to/display the file instead.
         const link = document.getElementById('download-link');
-        link.href = downloadUrl;
+        const blob = new Blob([JSON.stringify(geojson)], { type: "application/geo+json" });
+        if (resultObjectUrl) URL.revokeObjectURL(resultObjectUrl);
+        resultObjectUrl = URL.createObjectURL(blob);
+        link.href = resultObjectUrl;
+        link.setAttribute('download', (downloadUrl || "").split('/').pop() || 'eligible_area.geojson');
 
         $result.style.display = "block";
     }
