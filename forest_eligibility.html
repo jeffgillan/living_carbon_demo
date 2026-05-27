@@ -340,21 +340,27 @@
         setStatus("Draw or upload an AOI to begin.");
     }
 
-    function setAOI(feature) {
+    // Accepts a single Feature (from MapboxDraw) or a FeatureCollection (from an
+    // upload with multiple stands) and keeps ALL features in currentAOI.
+    function setAOI(geojson) {
         // RFC 7946: GeoJSON is implicitly WGS84 lon/lat — do NOT include a `crs`
         // member (the deprecated `crs` member can cause sf::st_read to mis-handle
-        // coordinates). Strip Mapbox-Draw-specific id and ensure properties exists.
-        const cleanFeature = {
+        // coordinates). Strip Mapbox-Draw-specific ids and ensure properties exists.
+        const srcFeatures = geojson.type === "FeatureCollection"
+            ? geojson.features
+            : [geojson];
+        const cleanFeatures = srcFeatures.map(f => ({
             type: "Feature",
-            properties: feature.properties || {},
-            geometry: feature.geometry
-        };
+            properties: f.properties || {},
+            geometry: f.geometry
+        }));
         currentAOI = {
             type: "FeatureCollection",
-            features: [cleanFeature]
+            features: cleanFeatures
         };
         refreshCalcButton();
-        setStatus("AOI ready. Enter passcode and click Calculate.");
+        const n = cleanFeatures.length;
+        setStatus(`AOI ready (${n} polygon${n > 1 ? "s" : ""}). Enter passcode and click Calculate.`);
     }
 
     // ================================================================
@@ -379,9 +385,9 @@
                     }
                 }
 
-                const feature = validateGeoJSON(geojson);
-                if (!feature) {
-                    alert('Invalid GeoJSON: must contain a Polygon or MultiPolygon geometry.');
+                const fc = validateGeoJSON(geojson);
+                if (!fc) {
+                    alert('Invalid GeoJSON: must contain at least one Polygon or MultiPolygon geometry.');
                     return;
                 }
 
@@ -389,12 +395,12 @@
                 removeUploadedAOIFromMap();
                 clearPreviousResult();
 
-                addUploadedAOIToMap(feature);
+                addUploadedAOIToMap(fc);
 
-                const bbox = turf.bbox(feature);
+                const bbox = turf.bbox(fc);
                 map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50 });
 
-                setAOI(feature);
+                setAOI(fc);
             } catch (err) {
                 alert('Error reading GeoJSON file: ' + err.message);
             }
@@ -402,27 +408,26 @@
         reader.readAsText(file);
     });
 
+    // Returns a FeatureCollection containing EVERY Polygon/MultiPolygon feature
+    // in the upload (not just the first), so multi-stand AOIs are analyzed whole.
     function validateGeoJSON(geojson) {
-        let geometry = null;
+        let features = [];
 
         if (geojson.type === 'FeatureCollection' && geojson.features) {
-            for (let i = 0; i < geojson.features.length; i++) {
-                const g = geojson.features[i].geometry;
-                if (g && (g.type === 'Polygon' || g.type === 'MultiPolygon')) {
-                    geometry = g;
-                    break;
-                }
-            }
+            features = geojson.features
+                .filter(f => f.geometry &&
+                    (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'))
+                .map(f => ({ type: 'Feature', geometry: f.geometry, properties: f.properties || {} }));
         } else if (geojson.type === 'Feature' && geojson.geometry) {
             if (geojson.geometry.type === 'Polygon' || geojson.geometry.type === 'MultiPolygon') {
-                geometry = geojson.geometry;
+                features = [{ type: 'Feature', geometry: geojson.geometry, properties: geojson.properties || {} }];
             }
         } else if (geojson.type === 'Polygon' || geojson.type === 'MultiPolygon') {
-            geometry = geojson;
+            features = [{ type: 'Feature', geometry: geojson, properties: {} }];
         }
 
-        if (!geometry) return null;
-        return { type: 'Feature', geometry: geometry, properties: {} };
+        if (features.length === 0) return null;
+        return { type: 'FeatureCollection', features: features };
     }
 
     function addUploadedAOIToMap(feature) {
@@ -557,7 +562,10 @@
                 const unwrap     = (v) => Array.isArray(v) ? v[0] : v;
                 const status      = unwrap(data.status);
                 const currentStep = unwrap(data.current_step);
-                const errorMsg    = unwrap(data.error);
+                const rawError    = unwrap(data.error);
+                const errorMsg    = rawError == null ? null
+                                  : typeof rawError === "string" ? rawError
+                                  : JSON.stringify(rawError);
 
                 // Print only when something changed, plus dump the full payload
                 // on the terminal transitions so we can see the error verbatim.
