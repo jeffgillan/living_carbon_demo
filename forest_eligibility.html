@@ -527,6 +527,8 @@
     function pollStatus(jobId, passcode) {
         let notReadySecs = 0;
         let lastSerialized = "";
+        let lastStep = null;
+        let stepStartedAt = Date.now();
 
         const tick = async () => {
             try {
@@ -562,22 +564,44 @@
                 const unwrap     = (v) => Array.isArray(v) ? v[0] : v;
                 const status      = unwrap(data.status);
                 const currentStep = unwrap(data.current_step);
+                const note        = unwrap(data.note);
                 const rawError    = unwrap(data.error);
                 const errorMsg    = rawError == null ? null
                                   : typeof rawError === "string" ? rawError
                                   : JSON.stringify(rawError);
 
+                // Reset the per-step timer whenever the step changes, so we can
+                // show how long the current step has been running.
+                if (currentStep !== lastStep) {
+                    lastStep = currentStep;
+                    stepStartedAt = Date.now();
+                }
+                const secsOnStep = Math.round((Date.now() - stepStartedAt) / 1000);
+
                 // Print only when something changed, plus dump the full payload
                 // on the terminal transitions so we can see the error verbatim.
-                const serialized = JSON.stringify({ status, currentStep, errorMsg });
+                const serialized = JSON.stringify({ status, currentStep, errorMsg, note });
                 if (serialized !== lastSerialized) {
                     lastSerialized = serialized;
                     appendLog(`[${new Date().toLocaleTimeString()}] status=${status}` +
                               (currentStep ? `, step=${currentStep}` : "") + "\n");
+                    if (note)     appendLog(`  ${note}\n`);
                     if (errorMsg) appendLog(`  error: ${errorMsg}\n`);
                 }
 
-                setStatus(`Job ${jobId} — ${status}${currentStep ? " · " + currentStep : ""}`);
+                // Build a live status line: step, any note, elapsed time on this
+                // step, and — if a step runs long — an explicit "Earth Engine may
+                // be slow" hint so a long wait never looks like a frozen page.
+                const active = (status !== "completed" && status !== "error");
+                let line = `Job ${jobId} — ${status}${currentStep ? " · " + currentStep : ""}`;
+                if (note) line += ` — ${note}`;
+                if (active && currentStep && currentStep !== "init") {
+                    line += `  (${secsOnStep}s on this step)`;
+                    if (secsOnStep >= 90) {
+                        line += " — Earth Engine is responding slowly; if it stalls the job will time out and you can just run it again.";
+                    }
+                }
+                setStatus(line, false);
 
                 const terminal = (status === "completed" || status === "error");
                 if (terminal) {
