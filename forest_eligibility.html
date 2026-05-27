@@ -481,13 +481,11 @@
         clearPreviousResult();
         setStatus("Submitting job …");
 
-        // Build the request body and surface it for debugging — the pipeline
-        // saves this verbatim to input_aoi.geojson, so seeing it here removes
-        // a layer of guesswork when EE rejects the geometry downstream.
+        // Send the AOI to the pipeline. Don't dump the GeoJSON coordinates into
+        // the log — just note how many polygons are being submitted.
         const requestBody = { passcode: passcode, ...currentAOI };
-        const requestBodyForLog = { ...requestBody, passcode: "[redacted]" };
-        appendLog("=== Request body (passcode redacted) ===\n" +
-                  JSON.stringify(requestBodyForLog, null, 2) + "\n\n");
+        const nPolys = (currentAOI.features || []).length;
+        appendLog(`Submitting AOI (${nPolys} polygon${nPolys === 1 ? "" : "s"})…\n`);
 
         // POST /run via bouncer
         let jobId;
@@ -510,7 +508,7 @@
 
             activeJob = { id: jobId, siteName: siteName, submittedAt: new Date() };
             setStatus(`Job started: ${jobId}`);
-            appendLog(`=== Submitted ===\n${JSON.stringify(data, null, 2)}\n\n=== Live log ===\n`);
+            appendLog(`Job started: ${jobId}\n\n=== Live pipeline log ===\n`);
         } catch (err) {
             setStatus("Submit failed: " + err.message, true);
             jobInFlight = false;
@@ -518,34 +516,39 @@
             return;
         }
 
-        pollStatus(jobId, passcode);
+        pollLogs(jobId, passcode);
     }
 
-    // Poll /status/<id> rather than /logs/<id> — the bouncer currently returns
-    // 405 for POST /logs. /status returns structured progress (status,
-    // current_step, error) which is enough to drive the UI and surface failures.
-    function pollStatus(jobId, passcode) {
+    // Stream the per-job pipeline.log to the live-log pane via /logs/<id>?offset=N.
+    // The pipeline writes rich, prefixed progress lines (e.g. "[job_id=…] [1.2 min]
+    // 5/7 exports in GCS") to that log; we append each new chunk verbatim so the
+    // user sees exactly what the process is doing. Modeled on test_bouncer.html.
+    const LOG_POLL_MS  = 1500;   // how often to poll for new log content
+    const STALL_WARN_S = 90;     // warn if no new output for this long
+
+    function pollLogs(jobId, passcode) {
+        let offset = 0;
         let notReadySecs = 0;
-        let lastSerialized = "";
-        let lastStep = null;
-        let stepStartedAt = Date.now();
+        let lastContentAt = Date.now();
 
         const tick = async () => {
             try {
-                const r = await fetch(`${BOUNCER_URL}/status/${jobId}`, {
+                const r = await fetch(`${BOUNCER_URL}/logs/${jobId}?offset=${offset}`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ passcode: passcode })
                 });
 
+                // Job dir not created yet (cold start) — keep waiting briefly.
                 if (r.status === 404) {
-                    notReadySecs += Math.max(1, Math.round(POLL_INTERVAL_MS / 1000));
+                    notReadySecs += Math.round(LOG_POLL_MS / 1000);
                     if (notReadySecs <= NOT_READY_TIMEOUT_S) {
-                        setStatus(`Job ${jobId} — waiting for process to start (${notReadySecs}s)…`);
-                        setTimeout(tick, POLL_INTERVAL_MS);
+                        setStatus(`Job ${jobId} — waiting for the pipeline to start (${notReadySecs}s)…`);
+                        setTimeout(tick, LOG_POLL_MS);
                     } else {
-                        appendLog("\nTimed out waiting for pipeline to start (30s).\n");
-                        setStatus("Pipeline failed to start within 30s.", true);
+                        appendLog("\nTimed out waiting for the pipeline to start (30s). " +
+                                  "The container may have cold-started — try running again.\n");
+                        setStatus("Pipeline did not start within 30s — please try again.", true);
                         jobInFlight = false;
                         refreshCalcButton();
                     }
@@ -558,68 +561,49 @@
 
                 const text = await r.text();
                 const jsonStart = text.indexOf("{");
-                if (jsonStart === -1) throw new Error("Could not parse status response.");
+                if (jsonStart === -1) throw new Error("Could not parse log response.");
                 const data = JSON.parse(text.substring(jsonStart));
 
-                const unwrap     = (v) => Array.isArray(v) ? v[0] : v;
-                const status      = unwrap(data.status);
-                const currentStep = unwrap(data.current_step);
-                const note        = unwrap(data.note);
-                const rawError    = unwrap(data.error);
-                const errorMsg    = rawError == null ? null
-                                  : typeof rawError === "string" ? rawError
-                                  : JSON.stringify(rawError);
+                const unwrap = (v) => Array.isArray(v) ? v[0] : v;
+                const content = unwrap(data.content);
+                const status  = unwrap(data.status);
+                const done    = unwrap(data.done);
+                const next    = unwrap(data.next_offset);
 
-                // Reset the per-step timer whenever the step changes, so we can
-                // show how long the current step has been running.
-                if (currentStep !== lastStep) {
-                    lastStep = currentStep;
-                    stepStartedAt = Date.now();
+                // Append new log content verbatim (keeps the [job_id=…] prefix).
+                if (content) {
+                    appendLog(content);
+                    lastContentAt = Date.now();
                 }
-                const secsOnStep = Math.round((Date.now() - stepStartedAt) / 1000);
+                if (typeof next === "number") offset = next;
 
-                // Print only when something changed, plus dump the full payload
-                // on the terminal transitions so we can see the error verbatim.
-                const serialized = JSON.stringify({ status, currentStep, errorMsg, note });
-                if (serialized !== lastSerialized) {
-                    lastSerialized = serialized;
-                    appendLog(`[${new Date().toLocaleTimeString()}] status=${status}` +
-                              (currentStep ? `, step=${currentStep}` : "") + "\n");
-                    if (note)     appendLog(`  ${note}\n`);
-                    if (errorMsg) appendLog(`  error: ${errorMsg}\n`);
-                }
-
-                // Build a live status line: step, any note, elapsed time on this
-                // step, and — if a step runs long — an explicit "Earth Engine may
-                // be slow" hint so a long wait never looks like a frozen page.
-                const active = (status !== "completed" && status !== "error");
-                let line = `Job ${jobId} — ${status}${currentStep ? " · " + currentStep : ""}`;
-                if (note) line += ` — ${note}`;
-                if (active && currentStep && currentStep !== "init") {
-                    line += `  (${secsOnStep}s on this step)`;
-                    if (secsOnStep >= 90) {
-                        line += " — Earth Engine is responding slowly; if it stalls the job will time out and you can just run it again.";
-                    }
-                }
-                setStatus(line, false);
-
-                const terminal = (status === "completed" || status === "error");
-                if (terminal) {
-                    appendLog(`\n=== Full status payload ===\n${JSON.stringify(data, null, 2)}\n`);
-                    appendLog(`\n=== Job finished with status: ${status} ===\n`);
+                if (done) {
+                    appendLog(`\n=== Job finished: ${status} ===\n`);
                     if (status === "completed") {
+                        setStatus(`Job ${jobId} — completed. Loading result…`);
                         await fetchAndDisplayResult(jobId, activeJob.siteName);
                     } else {
-                        setStatus(`Job failed: ${errorMsg || status}`, true);
+                        setStatus(`Job ${jobId} — failed. See the log above for details.`, true);
                     }
                     jobInFlight = false;
                     refreshCalcButton();
-                } else {
-                    setTimeout(tick, POLL_INTERVAL_MS * 2);
+                    return;
                 }
+
+                // Not done — show a live headline, and if no new output has arrived
+                // for a while, say so explicitly so a long wait never looks frozen.
+                const idleS = Math.round((Date.now() - lastContentAt) / 1000);
+                if (idleS >= STALL_WARN_S) {
+                    setStatus(`Job ${jobId} — running, but no new output for ${idleS}s. ` +
+                              `The pipeline may be waiting on a slow Earth Engine / network ` +
+                              `call; it will time out and you can re-run if needed.`, false);
+                } else {
+                    setStatus(`Job ${jobId} — running… (${status})`, false);
+                }
+                setTimeout(tick, LOG_POLL_MS);
             } catch (err) {
-                appendLog("\nPoll error: " + err.message + "\n");
-                setStatus("Poll error: " + err.message, true);
+                appendLog("\nLog poll error: " + err.message + "\n");
+                setStatus("Log poll error: " + err.message, true);
                 jobInFlight = false;
                 refreshCalcButton();
             }
