@@ -634,8 +634,11 @@
     // FETCH RESULT FROM GCS
     // ================================================================
     function buildResultUrl(jobId, siteName, dateStr) {
+        // Pipeline now uploads to a single-nested path: outputs/<jobId>/final/...
+        // (previously `gcloud storage cp -r` produced outputs/<jobId>/<jobId>/final/...).
+        // Requires the migrated pipeline image to be deployed.
         return `https://storage.googleapis.com/${GCS_BUCKET}/${GCS_OUTPUT_PREFIX}` +
-               `/${jobId}/${jobId}/final/${siteName}_eligible_area_${dateStr}.geojson`;
+               `/${jobId}/final/${siteName}_eligible_area_${dateStr}.geojson`;
     }
 
     function candidateDates() {
