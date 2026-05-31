@@ -195,6 +195,26 @@
             flex: none;
         }
 
+        details.adv-params { margin: 0 0 8px; }
+        details.adv-params > summary {
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: #555;
+            user-select: none;
+            margin-bottom: 8px;
+        }
+        details.adv-params > summary:hover { color: #222; }
+        .param-label { display: block; font-size: 0.82rem; color: #444; margin-bottom: 8px; }
+        .param-label input[type="number"] {
+            width: 100%;
+            margin-top: 3px;
+            padding: 6px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+        .param-hint { font-size: 0.75rem; color: #888; margin-top: 4px; }
+
         /* Draw tools in control panel */
         #draw-tools-container .maplibregl-ctrl-group {
             display: flex;
@@ -248,6 +268,16 @@
             <h3>2. Run Analysis</h3>
             <input type="text"     id="site-name" placeholder="Site_name">
             <input type="password" id="passcode"  placeholder="Team passcode">
+            <details class="adv-params">
+                <summary>Advanced parameters</summary>
+                <label class="param-label">Max slope (%)
+                    <input type="number" id="slope-threshold" min="0" max="100" step="1" value="30">
+                </label>
+                <label class="param-label">Canopy NDVI threshold
+                    <input type="number" id="ndvi-threshold" min="-1" max="1" step="0.01" value="0.53">
+                </label>
+                <p class="param-hint">Terrain up to this slope is eligible (default 30%). NDVI above the threshold is treated as existing tree canopy and excluded (default 0.53).</p>
+            </details>
             <button id="calc-btn" disabled>Calculate Plantable Acres</button>
             <p class="meta" id="job-status">Draw or upload an AOI to begin.</p>
 
@@ -318,6 +348,8 @@
     const $log      = document.getElementById("log-pane");
     const $passcode = document.getElementById("passcode");
     const $site     = document.getElementById("site-name");
+    const $slope    = document.getElementById("slope-threshold");
+    const $ndvi     = document.getElementById("ndvi-threshold");
     const $tracker  = document.getElementById("progress-tracker");
     const $metrics  = document.getElementById("live-metrics");
 
@@ -593,12 +625,29 @@
         // the log — just note how many polygons are being submitted.
         const requestBody = { passcode: passcode, ...currentAOI };
         const nPolys = (currentAOI.features || []).length;
-        appendLog(`Submitting AOI (${nPolys} polygon${nPolys === 1 ? "" : "s"})…\n`);
+
+        // Advanced parameters → query string (the pipeline also re-validates).
+        const slope = $slope.value.trim();
+        const ndvi  = $ndvi.value.trim();
+        if (slope !== "" && (isNaN(+slope) || +slope < 0 || +slope > 100)) {
+            alert("Max slope (%) must be a number between 0 and 100.");
+            jobInFlight = false; refreshCalcButton(); return;
+        }
+        if (ndvi !== "" && (isNaN(+ndvi) || +ndvi < -1 || +ndvi > 1)) {
+            alert("Canopy NDVI threshold must be a number between -1 and 1.");
+            jobInFlight = false; refreshCalcButton(); return;
+        }
+        let runUrl = `${BOUNCER_URL}/run?site_name=${encodeURIComponent(siteName)}`;
+        if (slope !== "") runUrl += `&slope_threshold_pct=${encodeURIComponent(slope)}`;
+        if (ndvi  !== "") runUrl += `&ndvi_canopy_threshold=${encodeURIComponent(ndvi)}`;
+
+        appendLog(`Submitting AOI (${nPolys} polygon${nPolys === 1 ? "" : "s"})` +
+                  ` — slope ≤ ${slope || "30"}%, NDVI threshold ${ndvi || "0.53"}…\n`);
 
         // POST /run via bouncer
         let jobId;
         try {
-            const r = await fetch(`${BOUNCER_URL}/run?site_name=${encodeURIComponent(siteName)}`, {
+            const r = await fetch(runUrl, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(requestBody)
