@@ -88,33 +88,57 @@
         .meta.error { color: #b91c1c; }
 
         #log-pane {
-            display: none;
             margin-top: 8px;
-            max-height: 220px;
+            max-height: 240px;
             overflow-y: auto;
             background: #111;
             color: #0f0;
-            font-size: 0.75rem;
+            font-size: 0.72rem;
             padding: 8px;
             border-radius: 4px;
             white-space: pre-wrap;
             word-break: break-word;
             font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         }
+        details.log-details { margin-top: 10px; }
+        details.log-details > summary {
+            cursor: pointer;
+            font-size: 0.8rem;
+            color: #555;
+            user-select: none;
+        }
+        details.log-details > summary:hover { color: #222; }
 
-        #result-panel {
-            display: none;
+        /* Friendly progress tracker */
+        #progress-tracker { display: none; margin-top: 10px; }
+        .step-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            padding: 3px 0;
+        }
+        .step-row .step-icon {
+            width: 18px;
+            text-align: center;
+            flex: none;
             font-size: 0.9rem;
         }
-        #result-panel .stat {
-            margin-bottom: 4px;
-        }
-        #download-link {
-            display: inline-block;
-            margin-top: 8px;
-            font-size: 0.85rem;
-            color: #15803d;
-        }
+        .step-row.pending  { color: #aab; }
+        .step-row.running  { color: #1a1a1a; font-weight: 600; }
+        .step-row.done     { color: #15803d; }
+        .step-row.skipped  { color: #999; }
+        .step-row.error    { color: #b91c1c; font-weight: 600; }
+        .step-row.running .step-icon { display: inline-block; animation: spin 1.1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        #elapsed { font-size: 0.78rem; color: #777; margin-top: 6px; }
+
+        /* Live metrics */
+        #live-metrics { display: none; margin-top: 10px; font-size: 0.85rem; }
+        #live-metrics .metric { display: flex; justify-content: space-between; padding: 2px 0; }
+        #live-metrics .metric span:last-child { font-weight: 600; color: #15803d; }
+
+        /* Map layers table of contents */
         .layer-toggle {
             display: block;
             margin-top: 8px;
@@ -123,6 +147,31 @@
             user-select: none;
         }
         .layer-toggle input { margin-right: 6px; vertical-align: middle; }
+        .layer-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            margin-top: 8px;
+            font-size: 0.82rem;
+        }
+        .layer-row > label {
+            flex: 1 1 auto;
+            cursor: pointer;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .layer-row > label input { margin-right: 6px; vertical-align: middle; }
+        .layer-actions { flex: none; display: flex; gap: 2px; }
+        .layer-actions button {
+            width: 24px; height: 24px; padding: 0;
+            background: #f3f4f6; color: #374151;
+            border: 1px solid #d1d5db; border-radius: 4px;
+            font-size: 0.8rem; line-height: 1; cursor: pointer;
+        }
+        .layer-actions button:hover { background: #e5e7eb; }
+        #toc-empty { font-size: 0.8rem; color: #999; margin-top: 8px; }
 
         .back-link {
             display: inline-block;
@@ -132,6 +181,19 @@
             margin-bottom: 10px;
         }
         .back-link:hover { color: #222; }
+
+        .app-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 4px;
+        }
+        .app-header h2 { margin: 0; }
+        .app-logo {
+            height: 32px;
+            width: auto;
+            flex: none;
+        }
 
         /* Draw tools in control panel */
         #draw-tools-container .maplibregl-ctrl-group {
@@ -166,7 +228,10 @@
 
     <div id="control-panel">
         <a href="index.html" class="back-link">&larr; Back</a>
-        <h2>Reforestation Eligibility</h2>
+        <div class="app-header">
+            <img src="lc_logo.png" alt="Living Carbon logo" class="app-logo">
+            <h2>Reforestation Eligibility</h2>
+        </div>
         <p class="meta" style="margin-bottom:12px;">
             Identify Plantable Acres using the criteria of slope, tree canopy, wetlands, hydric soils, recent deforestation, and albedo.
         </p>
@@ -185,16 +250,32 @@
             <input type="password" id="passcode"  placeholder="Team passcode">
             <button id="calc-btn" disabled>Calculate Plantable Acres</button>
             <p class="meta" id="job-status">Draw or upload an AOI to begin.</p>
-            <pre id="log-pane"></pre>
+
+            <div id="progress-tracker">
+                <div class="step-row pending" data-step="start"><span class="step-icon">○</span><span class="step-label">Starting worker</span></div>
+                <div class="step-row pending" data-step="exports"><span class="step-icon">○</span><span class="step-label">Earth Engine exports</span></div>
+                <div class="step-row pending" data-step="terrain"><span class="step-icon">○</span><span class="step-label">Terrain &amp; canopy</span></div>
+                <div class="step-row pending" data-step="wetlands"><span class="step-icon">○</span><span class="step-label">Wetlands</span></div>
+                <div class="step-row pending" data-step="hydric"><span class="step-icon">○</span><span class="step-label">Hydric soils</span></div>
+                <div class="step-row pending" data-step="nci"><span class="step-icon">○</span><span class="step-label">Albedo / NCI</span></div>
+                <div class="step-row pending" data-step="integration"><span class="step-icon">○</span><span class="step-label">Final integration</span></div>
+                <div id="elapsed"></div>
+            </div>
+
+            <div id="live-metrics"></div>
+
+            <details class="log-details">
+                <summary>Show technical log</summary>
+                <pre id="log-pane"></pre>
+            </details>
         </div>
 
-        <div class="control-section" id="result-panel">
-            <h3>Result</h3>
-            <div class="stat"><strong>AOI:</strong>            <span id="aoi-acres">—</span> ac</div>
-            <div class="stat"><strong>Eligible acres:</strong> <span id="eligible-acres">—</span> ac</div>
-            <div class="stat"><strong>% eligible:</strong>     <span id="pct-eligible">—</span></div>
-            <label class="layer-toggle"><input type="checkbox" id="result-toggle" checked> Show eligible area</label>
-            <a id="download-link" href="#" download>Download GeoJSON</a>
+        <div class="control-section">
+            <h3>Map Layers</h3>
+            <label class="layer-toggle"><input type="checkbox" id="toggle-imagery" checked> Satellite imagery</label>
+            <label class="layer-toggle" title="Toggles uploaded AOIs. Drawn polygons are controlled by the draw tools above."><input type="checkbox" id="toggle-aoi" checked> Area of Interest (uploaded)</label>
+            <div id="result-layers"></div>
+            <div id="toc-empty">No saved results yet. Run an analysis to add one.</div>
         </div>
     </div>
 
@@ -219,7 +300,15 @@
     let currentAOI      = null;   // { type: "FeatureCollection", features: [Feature] } in EPSG:4326
     let activeJob       = null;   // { id, siteName, submittedAt }
     let jobInFlight     = false;
-    let resultObjectUrl = null;   // blob: URL backing the Download GeoJSON link
+
+    // Saved results (session-only). Each completed run appends an entry + its own
+    // map layers; entries are independent of the input AOI, so editing/moving/
+    // deleting the AOI never removes them, and multiple results stack on the map.
+    let resultSeq      = 0;
+    const resultLayers = [];      // [{ id, sourceId, fillId, outlineId, siteName, jobId, eligibleAc, pct, geojson }]
+    let logBuffer      = "";      // accumulated raw pipeline log, parsed into the progress tracker
+
+    const COLD_START_MSG = "System booting up.... it will take 2-3 minutes before your analysis begins. Then you will receive live updates as it progresses.";
 
     // ================================================================
     // DOM HELPERS
@@ -229,20 +318,21 @@
     const $log      = document.getElementById("log-pane");
     const $passcode = document.getElementById("passcode");
     const $site     = document.getElementById("site-name");
-    const $result   = document.getElementById("result-panel");
+    const $tracker  = document.getElementById("progress-tracker");
+    const $metrics  = document.getElementById("live-metrics");
 
     function setStatus(msg, isError) {
         $status.textContent = msg;
         $status.classList.toggle("error", !!isError);
     }
     function appendLog(text) {
-        if ($log.style.display === "none") $log.style.display = "block";
+        // Raw log lives inside a collapsible <details>; just append + autoscroll.
         $log.textContent += text;
         $log.scrollTop = $log.scrollHeight;
     }
     function clearLog() {
         $log.textContent = "";
-        $log.style.display = "none";
+        logBuffer = "";
     }
 
     // ================================================================
@@ -336,16 +426,13 @@
             all.features.forEach(f => { if (f.id !== latestId) draw.delete(f.id); });
         }
         removeUploadedAOIFromMap();
-        clearPreviousResult();
         setAOI(e.features[0]);
     }
     function onDrawUpdate(e) {
-        clearPreviousResult();
         setAOI(e.features[0]);
     }
     function onDrawDelete() {
         currentAOI = null;
-        clearPreviousResult();
         refreshCalcButton();
         setStatus("Draw or upload an AOI to begin.");
     }
@@ -403,7 +490,6 @@
 
                 if (draw) draw.deleteAll();
                 removeUploadedAOIFromMap();
-                clearPreviousResult();
 
                 addUploadedAOIToMap(fc);
 
@@ -468,10 +554,14 @@
     $passcode.addEventListener('input', refreshCalcButton);
     $site.addEventListener('input', refreshCalcButton);
 
-    // Toggle the rendered eligible-area layer on/off.
-    document.getElementById('result-toggle').addEventListener('change', function (e) {
+    // Base-layer toggles in the Map Layers table of contents.
+    document.getElementById('toggle-imagery').addEventListener('change', function (e) {
+        if (map.getLayer('esri-imagery-layer'))
+            map.setLayoutProperty('esri-imagery-layer', 'visibility', e.target.checked ? 'visible' : 'none');
+    });
+    document.getElementById('toggle-aoi').addEventListener('change', function (e) {
         const v = e.target.checked ? 'visible' : 'none';
-        ['plantable-result-fill', 'plantable-result-outline'].forEach(id => {
+        ['uploaded-aoi-fill', 'uploaded-aoi-outline'].forEach(id => {
             if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
         });
     });
@@ -496,8 +586,8 @@
         jobInFlight = true;
         refreshCalcButton();
         clearLog();
-        clearPreviousResult();
-        setStatus("Submitting job …");
+        resetTracker();            // does NOT touch saved results — they persist
+        setStatus("Submitting analysis…");
 
         // Send the AOI to the pipeline. Don't dump the GeoJSON coordinates into
         // the log — just note how many polygons are being submitted.
@@ -525,7 +615,8 @@
             if (!jobId) throw new Error("No job_id in response.");
 
             activeJob = { id: jobId, siteName: siteName, submittedAt: new Date() };
-            setStatus(`Job started: ${jobId}`);
+            setStatus(COLD_START_MSG);
+            startElapsed();
             appendLog(`Job started: ${jobId}\n\n=== Live pipeline log ===\n`);
         } catch (err) {
             setStatus("Submit failed: " + err.message, true);
@@ -537,17 +628,14 @@
         pollLogs(jobId, passcode);
     }
 
-    // Stream the per-job pipeline.log to the live-log pane via /logs/<id>?offset=N.
-    // The pipeline writes rich, prefixed progress lines (e.g. "[job_id=…] [1.2 min]
-    // 5/7 exports in GCS") to that log; we append each new chunk verbatim so the
-    // user sees exactly what the process is doing. Modeled on test_bouncer.html.
-    const LOG_POLL_MS  = 1500;   // how often to poll for new log content
-    const STALL_WARN_S = 90;     // warn if no new output for this long
+    // Poll /logs/<id>?offset=N (via the bouncer). The raw pipeline.log feeds BOTH
+    // the collapsible technical log and the friendly progress tracker (parsed in
+    // updateTrackerFromLog). The old 90s "no new output" warning was removed — it
+    // was a relic that fired during the normal 2-3 min cold-start window.
+    const LOG_POLL_MS = 1500;
 
     function pollLogs(jobId, passcode) {
         let offset = 0;
-        let notReadySecs = 0;
-        let lastContentAt = Date.now();
 
         const tick = async () => {
             try {
@@ -557,19 +645,11 @@
                     body: JSON.stringify({ passcode: passcode })
                 });
 
-                // Job dir not created yet (cold start) — keep waiting briefly.
+                // 404 = job folder not in GCS yet (earliest cold start). Keep
+                // waiting with the friendly booting message.
                 if (r.status === 404) {
-                    notReadySecs += Math.round(LOG_POLL_MS / 1000);
-                    if (notReadySecs <= NOT_READY_TIMEOUT_S) {
-                        setStatus(`Job ${jobId} — waiting for the pipeline to start (${notReadySecs}s)…`);
-                        setTimeout(tick, LOG_POLL_MS);
-                    } else {
-                        appendLog("\nTimed out waiting for the pipeline to start (30s). " +
-                                  "The container may have cold-started — try running again.\n");
-                        setStatus("Pipeline did not start within 30s — please try again.", true);
-                        jobInFlight = false;
-                        refreshCalcButton();
-                    }
+                    setStatus(COLD_START_MSG);
+                    setTimeout(tick, LOG_POLL_MS);
                     return;
                 }
                 if (!r.ok) {
@@ -588,46 +668,150 @@
                 const done    = unwrap(data.done);
                 const next    = unwrap(data.next_offset);
 
-                // Append new log content verbatim (keeps the [job_id=…] prefix).
                 if (content) {
                     appendLog(content);
-                    lastContentAt = Date.now();
+                    logBuffer += content;
+                    updateTrackerFromLog();
                 }
                 if (typeof next === "number") offset = next;
 
                 if (done) {
-                    appendLog(`\n=== Job finished: ${status} ===\n`);
+                    stopElapsed();
                     if (status === "completed") {
-                        setStatus(`Job ${jobId} — completed. Loading result…`);
+                        markAllStepsDone();
+                        setStatus("Analysis complete — loading result…");
                         await fetchAndDisplayResult(jobId, activeJob.siteName);
                     } else {
-                        setStatus(`Job ${jobId} — failed. See the log above for details.`, true);
+                        markCurrentStepError();
+                        setStatus("Analysis failed — open the technical log for details.", true);
                     }
                     jobInFlight = false;
                     refreshCalcButton();
                     return;
                 }
 
-                // Not done — show a live headline, and if no new output has arrived
-                // for a while, say so explicitly so a long wait never looks frozen.
-                const idleS = Math.round((Date.now() - lastContentAt) / 1000);
-                if (idleS >= STALL_WARN_S) {
-                    setStatus(`Job ${jobId} — running, but no new output for ${idleS}s. ` +
-                              `The pipeline may be waiting on a slow Earth Engine / network ` +
-                              `call; it will time out and you can re-run if needed.`, false);
-                } else {
-                    setStatus(`Job ${jobId} — running… (${status})`, false);
-                }
+                refreshHeadline();
                 setTimeout(tick, LOG_POLL_MS);
             } catch (err) {
                 appendLog("\nLog poll error: " + err.message + "\n");
-                setStatus("Log poll error: " + err.message, true);
+                setStatus("Connection error while fetching progress: " + err.message, true);
+                stopElapsed();
                 jobInFlight = false;
                 refreshCalcButton();
             }
         };
 
         tick();
+    }
+
+    // ================================================================
+    // PROGRESS TRACKER (parsed from the streamed pipeline log)
+    // ================================================================
+    const STEP_ORDER = ["start", "exports", "terrain", "wetlands", "hydric", "nci", "integration"];
+    const STEP_LABEL = {
+        start: "Starting worker", exports: "Earth Engine exports", terrain: "Terrain & canopy",
+        wetlands: "Wetlands", hydric: "Hydric soils", nci: "Albedo / NCI", integration: "Final integration"
+    };
+    const STEP_ICON = { pending: "○", running: "◐", done: "✓", skipped: "⏭", error: "✕" };
+    let elapsedTimer = null;
+
+    function setStep(step, state, extra) {
+        const row = $tracker.querySelector(`.step-row[data-step="${step}"]`);
+        if (!row) return;
+        row.className = "step-row " + state;
+        row.querySelector(".step-icon").textContent = STEP_ICON[state] || "○";
+        row.querySelector(".step-label").textContent = STEP_LABEL[step] + (extra ? " " + extra : "");
+    }
+
+    function resetTracker() {
+        $tracker.style.display = "block";
+        STEP_ORDER.forEach(s => setStep(s, "pending"));
+        setStep("start", "running");
+        $metrics.style.display = "none";
+        $metrics.innerHTML = "";
+        document.getElementById("elapsed").textContent = "";
+    }
+
+    function startElapsed() {
+        const t0 = Date.now();
+        const render = () => {
+            const s = Math.round((Date.now() - t0) / 1000);
+            document.getElementById("elapsed").textContent =
+                `Elapsed: ${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+        };
+        render();
+        elapsedTimer = setInterval(render, 1000);
+    }
+    function stopElapsed() { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; } }
+
+    function updateTrackerFromLog() {
+        const b = logBuffer;
+        const has = (re) => re.test(b);
+        const grab = (re) => { const x = b.match(re); return x ? x[1] : null; };
+
+        // "finished" markers come from the reliable result lines the pipeline emits.
+        const finished = {
+            start:       has(/GEE Exports|Started GEE task|AOI:\s*[\d.]/),
+            exports:     has(/Downloaded:|Terrain, Canopy/),
+            terrain:     has(/Terrain\/canopy eligible area:/),
+            wetlands:    has(/After wetland exclusion:|No (NWI )?wetlands/i),
+            hydric:      has(/After hydric soil exclusion:|No hydric soil/i),
+            nci:         has(/NCI flag:/),
+            integration: has(/Pipeline completed successfully/)
+        };
+        // Mark everything up to the last finished step done, the next one running.
+        let maxDone = -1;
+        STEP_ORDER.forEach((s, i) => { if (finished[s]) maxDone = i; });
+        STEP_ORDER.forEach((s, i) => {
+            if (i <= maxDone) setStep(s, "done");
+            else if (i === maxDone + 1) setStep(s, "running");
+            else setStep(s, "pending");
+        });
+
+        // Live metrics, filled in as the numbers appear in the log.
+        const metrics = [];
+        const exp = b.match(/(\d)\/7 exports in GCS/g);
+        if (exp) { const last = exp[exp.length - 1].match(/(\d)\/7/); if (last) metrics.push(["Satellite exports", `${last[1]}/7`]); }
+        const aoiAc  = grab(/AOI:\s*([\d.]+)\s*total acres/);          if (aoiAc)  metrics.push(["AOI area", `${aoiAc} ac`]);
+        const terrAc = grab(/Terrain\/canopy eligible area:\s*([\d.]+)/); if (terrAc) metrics.push(["After terrain/canopy", `${terrAc} ac`]);
+        const wetAc  = grab(/After wetland exclusion:\s*([\d.]+)/);     if (wetAc)  metrics.push(["After wetlands", `${wetAc} ac`]);
+        const hydAc  = grab(/After hydric soil exclusion:\s*([\d.]+)/); if (hydAc)  metrics.push(["After hydric soils", `${hydAc} ac`]);
+        const fin = b.match(/Final eligible area:\s*([\d.]+)\s*ac\s*\(([\d.]+)%/);
+        if (fin) metrics.push(["Final eligible", `${fin[1]} ac (${fin[2]}%)`]);
+        const nci = grab(/NCI flag:\s*(\w+)/);                          if (nci)    metrics.push(["NCI flag", nci]);
+
+        if (metrics.length) {
+            $metrics.style.display = "block";
+            $metrics.innerHTML = metrics.map(([k, v]) => `<div class="metric"><span>${k}</span><span>${v}</span></div>`).join("");
+        }
+        refreshHeadline();
+    }
+
+    function refreshHeadline() {
+        // Until real pipeline output arrives, keep the friendly booting message.
+        if (!/GEE Exports|Started GEE task|AOI:\s*[\d.]|exports in GCS/.test(logBuffer)) {
+            setStatus(COLD_START_MSG);
+            return;
+        }
+        const running = STEP_ORDER.find(s => {
+            const row = $tracker.querySelector(`.step-row[data-step="${s}"]`);
+            return row && row.classList.contains("running");
+        });
+        if (running) setStatus("Running: " + STEP_LABEL[running] + "…");
+    }
+
+    function markAllStepsDone() {
+        STEP_ORDER.forEach(s => {
+            const row = $tracker.querySelector(`.step-row[data-step="${s}"]`);
+            if (row && !row.classList.contains("skipped")) setStep(s, "done");
+        });
+    }
+    function markCurrentStepError() {
+        const running = STEP_ORDER.find(s => {
+            const row = $tracker.querySelector(`.step-row[data-step="${s}"]`);
+            return row && row.classList.contains("running");
+        });
+        if (running) setStep(running, "error");
     }
 
     // ================================================================
@@ -692,69 +876,96 @@
             return;
         }
 
-        addResultToMap(geojson);
-        displayAcreage(geojson, resultUrl);
-        setStatus(`Result loaded for job ${jobId}.`);
+        addResultLayer(geojson, { siteName, jobId, url: resultUrl });
+        setStatus("Analysis complete — result added to Map Layers.");
     }
 
-    function addResultToMap(geojson) {
-        removeResultFromMap();
-        // New result is added visible — keep the toggle in sync.
-        document.getElementById('result-toggle').checked = true;
-        map.addSource('plantable-result', { type: 'geojson', data: geojson });
-        map.addLayer({
-            id: 'plantable-result-fill', type: 'fill', source: 'plantable-result',
-            paint: { 'fill-color': '#22c55e', 'fill-opacity': 0.45 }
-        });
-        map.addLayer({
-            id: 'plantable-result-outline', type: 'line', source: 'plantable-result',
-            paint: { 'line-color': '#15803d', 'line-width': 2 }
-        });
+    // ================================================================
+    // RESULTS — persistent map layers + table-of-contents rows
+    // Each completed run adds its OWN source/layers (unique id) and a TOC row.
+    // Results are independent of the input AOI and of each other, so they stack
+    // and persist until removed (session-only; a page reload clears them).
+    // ================================================================
+    function addResultLayer(geojson, meta) {
+        resultSeq += 1;
+        const id = "result-" + resultSeq;
+        const sourceId = id, fillId = id + "-fill", outlineId = id + "-outline";
 
-        // Fit map to combined AOI + result
+        map.addSource(sourceId, { type: "geojson", data: geojson });
+        map.addLayer({ id: fillId, type: "fill", source: sourceId,
+            paint: { "fill-color": "#22c55e", "fill-opacity": 0.45 } });
+        map.addLayer({ id: outlineId, type: "line", source: sourceId,
+            paint: { "line-color": "#15803d", "line-width": 2 } });
+
+        const sqmToAcres = (m2) => m2 / 4046.8564224;
+        const eligibleAc = sqmToAcres(turf.area(geojson));
+        const aoiAc      = currentAOI ? sqmToAcres(turf.area(currentAOI)) : 0;
+        const pct        = aoiAc > 0 ? (100 * eligibleAc / aoiAc) : null;
+
+        const entry = { id, sourceId, fillId, outlineId,
+            siteName: meta.siteName, jobId: meta.jobId, eligibleAc, pct, geojson };
+        resultLayers.push(entry);
+        addTocRow(entry);
+
         try {
-            const fc = { type: "FeatureCollection",
-                         features: [...(currentAOI?.features || []),
-                                    ...((geojson.features) || [geojson])] };
-            const bbox = turf.bbox(fc);
-            map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50 });
+            const b = turf.bbox(geojson);
+            map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 50 });
         } catch (e) { /* ignore */ }
     }
 
-    function removeResultFromMap() {
-        ['plantable-result-fill', 'plantable-result-outline'].forEach(id => {
-            if (map.getLayer(id)) map.removeLayer(id);
+    function addTocRow(entry) {
+        document.getElementById("toc-empty").style.display = "none";
+        const pctTxt   = entry.pct != null ? ` (${entry.pct.toFixed(1)}%)` : "";
+        const labelTxt = `${entry.siteName} — ${entry.eligibleAc.toFixed(1)} ac${pctTxt}`;
+
+        const row = document.createElement("div");
+        row.className = "layer-row";
+        row.dataset.id = entry.id;
+
+        const label = document.createElement("label");
+        label.title = labelTxt;
+        const cb = document.createElement("input");
+        cb.type = "checkbox"; cb.checked = true;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(" " + labelTxt));
+
+        const actions = document.createElement("span");
+        actions.className = "layer-actions";
+        actions.innerHTML =
+            `<button data-act="zoom" title="Zoom to">⤢</button>` +
+            `<button data-act="download" title="Download GeoJSON">⭳</button>` +
+            `<button data-act="remove" title="Remove from map">✕</button>`;
+
+        row.appendChild(label);
+        row.appendChild(actions);
+        document.getElementById("result-layers").appendChild(row);
+
+        cb.addEventListener("change", (e) => {
+            const v = e.target.checked ? "visible" : "none";
+            [entry.fillId, entry.outlineId].forEach(id => {
+                if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", v);
+            });
         });
-        if (map.getSource('plantable-result')) map.removeSource('plantable-result');
-    }
-
-    function displayAcreage(geojson, downloadUrl) {
-        const sqmToAcres = (m2) => m2 / 4046.8564224;
-        const eligibleSqm = turf.area(geojson);
-        const aoiSqm      = currentAOI ? turf.area(currentAOI) : 0;
-        const eligibleAc  = sqmToAcres(eligibleSqm);
-        const aoiAc       = sqmToAcres(aoiSqm);
-        const pct         = aoiAc > 0 ? (100 * eligibleAc / aoiAc) : 0;
-
-        document.getElementById('aoi-acres').textContent      = aoiAc.toFixed(2);
-        document.getElementById('eligible-acres').textContent = eligibleAc.toFixed(2);
-        document.getElementById('pct-eligible').textContent   = pct.toFixed(1) + "%";
-        // Download the in-memory GeoJSON via a same-origin blob: URL. Pointing the
-        // <a download> at the cross-origin GCS URL doesn't work — browsers ignore
-        // `download` cross-origin and navigate to/display the file instead.
-        const link = document.getElementById('download-link');
-        const blob = new Blob([JSON.stringify(geojson)], { type: "application/geo+json" });
-        if (resultObjectUrl) URL.revokeObjectURL(resultObjectUrl);
-        resultObjectUrl = URL.createObjectURL(blob);
-        link.href = resultObjectUrl;
-        link.setAttribute('download', (downloadUrl || "").split('/').pop() || 'eligible_area.geojson');
-
-        $result.style.display = "block";
-    }
-
-    function clearPreviousResult() {
-        removeResultFromMap();
-        $result.style.display = "none";
+        actions.querySelector('[data-act="zoom"]').addEventListener("click", () => {
+            try { const b = turf.bbox(entry.geojson);
+                map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 50 }); } catch (e) {}
+        });
+        actions.querySelector('[data-act="download"]').addEventListener("click", () => {
+            const blob = new Blob([JSON.stringify(entry.geojson)], { type: "application/geo+json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url; a.download = `${entry.siteName}_eligible_${entry.id}.geojson`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        });
+        actions.querySelector('[data-act="remove"]').addEventListener("click", () => {
+            [entry.fillId, entry.outlineId].forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+            if (map.getSource(entry.sourceId)) map.removeSource(entry.sourceId);
+            const i = resultLayers.indexOf(entry);
+            if (i >= 0) resultLayers.splice(i, 1);
+            row.remove();
+            if (resultLayers.length === 0) document.getElementById("toc-empty").style.display = "block";
+        });
     }
     </script>
 </body>
