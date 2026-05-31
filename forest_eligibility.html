@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Forest Eligibility — Plantable Acres</title>
+    <title>Reforestation Eligibility — Plantable Acres</title>
 
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css">
     <script src="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js"></script>
@@ -166,9 +166,9 @@
 
     <div id="control-panel">
         <a href="index.html" class="back-link">&larr; Back</a>
-        <h2>Forest Eligibility</h2>
+        <h2>Reforestation Eligibility</h2>
         <p class="meta" style="margin-bottom:12px;">
-            Draw or upload an AOI, then submit to the reforestation-eligibility pipeline to compute plantable acres.
+            Identify Plantable Acres using the criteria of slope, tree canopy, wetlands, hydric soils, recent deforestation, and albedo.
         </p>
 
         <div class="control-section">
@@ -181,7 +181,7 @@
 
         <div class="control-section">
             <h3>2. Run pipeline</h3>
-            <input type="text"     id="site-name" placeholder="Site name (e.g. my_property)">
+            <input type="text"     id="site-name" placeholder="Site_name">
             <input type="password" id="passcode"  placeholder="Team passcode">
             <button id="calc-btn" disabled>Calculate Plantable Acres</button>
             <p class="meta" id="job-status">Draw or upload an AOI to begin.</p>
@@ -207,7 +207,7 @@
     const GCS_BUCKET        = "livingcarbon_bucket";
     const GCS_OUTPUT_PREFIX = "outputs";
 
-    const MAP_CENTER          = [-98, 39];
+    const MAP_CENTER          = [-85, 39];
     const MAP_ZOOM            = 4;
     const POLL_INTERVAL_MS    = 1000;
     const NOT_READY_TIMEOUT_S = 30;
@@ -255,7 +255,7 @@
             sources: {
                 'esri-imagery': {
                     type: 'raster',
-                    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+                    tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'],
                     tileSize: 256,
                     attribution: 'Tiles &copy; Esri'
                 }
