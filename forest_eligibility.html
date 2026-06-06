@@ -699,7 +699,8 @@
             if (!jobId) throw new Error("No job_id in response.");
 
             activeJob = { id: jobId, siteName: siteName, submittedAt: new Date(),
-                          wetlandFt: (wetland !== "" ? wetland : "150") };
+                          wetlandFt: (wetland !== "" ? wetland : "150"),
+                          canopyPct: (canopyPct !== "" ? canopyPct : "50") };
             setStatus(COLD_START_MSG);
             startElapsed();
             appendLog(`Job started: ${jobId}\n\n=== Live pipeline log ===\n`);
@@ -856,19 +857,42 @@
             else setStep(s, "pending");
         });
 
-        // Live metrics, filled in as the numbers appear in the log.
-        const metrics = [];
-        const aoiAc  = grab(/AOI:\s*([\d.]+)\s*total acres/);          if (aoiAc)  metrics.push(["AOI area", `${aoiAc} ac`]);
-        const terrAc = grab(/Raster-eligible area:\s*([\d.]+)/);       if (terrAc) metrics.push(["After slope/canopy/loss", `${terrAc} ac`]);
-        const wetAc  = grab(/After wetland exclusion:\s*([\d.]+)/);     if (wetAc)  metrics.push(["After wetlands", `${wetAc} ac`]);
-        const hydAc  = grab(/After hydric soil exclusion:\s*([\d.]+)/); if (hydAc)  metrics.push(["After hydric soils", `${hydAc} ac`]);
-        const fin = b.match(/Final eligible area:\s*([\d.]+)\s*ac\s*\(([\d.]+)%/);
-        if (fin) metrics.push(["Final eligible", `${fin[1]} ac (${fin[2]}%)`]);
-        const nci = grab(/NCI flag:\s*(\w+)/);                          if (nci)    metrics.push(["NCI flag", nci]);
+        // Live metrics: per-step acres waterfall (acres removed + remaining eligible).
+        // Values come from the integration log; the running eligible total is the
+        // basis, so each stage's "removed" = previous remaining − this remaining.
+        const num = (re) => { const x = b.match(re); return x ? parseFloat(x[1]) : null; };
+        const fmt = (n) => (Math.round(n * 10) / 10).toFixed(1);
+        const aoiAc = num(/Total AOI:\s*([\d.]+)\s*ac/) ?? num(/AOI:\s*([\d.]+)\s*total acres/);
+        const r1 = num(/After raster eligibility[^:]*:\s*([\d.]+)/) ?? num(/Raster-eligible area:\s*([\d.]+)/);
+        const r2 = num(/After wetland exclusion:\s*([\d.]+)/);
+        const r3 = num(/After hydric soil exclusion:\s*([\d.]+)/);
+        const r4 = num(/After area filter[^:]*:\s*([\d.]+)/);
+        const finM = b.match(/Final eligible area:\s*([\d.]+)\s*ac\s*\(([\d.]+)%/);
+        const nciFlag = grab(/NCI flag:\s*(\w+)/);
 
-        if (metrics.length) {
+        const rows = [];
+        if (aoiAc != null) {
+            rows.push(["Total AOI", `${fmt(aoiAc)} ac`]);
+            let prev = aoiAc;
+            const stages = [
+                ["Slope / canopy / forest loss", r1],
+                ["Wetland buffer", r2],
+                ["Hydric soils", r3],
+                ["Min size + smoothing", r4]
+            ];
+            for (const [label, val] of stages) {
+                if (val == null) continue;
+                const removed = Math.max(0, prev - val);
+                rows.push([`− ${label}`, `${fmt(removed)} ac removed → ${fmt(val)} ac`]);
+                prev = val;
+            }
+            if (finM)    rows.push(["Final eligible", `${finM[1]} ac (${finM[2]}%)`]);
+            if (nciFlag) rows.push(["NCI flag", nciFlag]);
+        }
+
+        if (rows.length) {
             $metrics.style.display = "block";
-            $metrics.innerHTML = metrics.map(([k, v]) => `<div class="metric"><span>${k}</span><span>${v}</span></div>`).join("");
+            $metrics.innerHTML = rows.map(([k, v]) => `<div class="metric"><span>${k}</span><span>${v}</span></div>`).join("");
         }
         refreshHeadline();
     }
@@ -967,7 +991,8 @@
         // Load the contributing context layers (best-effort; any missing layer is
         // skipped). All have deterministic filenames in the flat run folder.
         const wetlandFt = (activeJob && activeJob.wetlandFt) ? activeJob.wetlandFt : "150";
-        loadContributingLayers(jobId, siteName, wetlandFt, runEntry);
+        const canopyPct = (activeJob && activeJob.canopyPct) ? Number(activeJob.canopyPct) : 50;
+        loadContributingLayers(jobId, siteName, wetlandFt, canopyPct, runEntry);
     }
 
     // ================================================================
@@ -1091,7 +1116,7 @@
         return `https://storage.googleapis.com/${GCS_BUCKET}/${GCS_OUTPUT_PREFIX}/${jobId}`;
     }
 
-    async function loadContributingLayers(jobId, siteName, wetlandFt, runEntry) {
+    async function loadContributingLayers(jobId, siteName, wetlandFt, canopyPct, runEntry) {
         const base = runFolderBase(jobId);
         const vectors = [
             { key: "wetland", label: "Wetland buffer", color: "#2563eb",
@@ -1100,9 +1125,12 @@
               url: `${base}/${siteName}_hydric_soils.geojson` }
         ];
         const rasters = [
-            { key: "slope",  label: "Slope (%)",          ramp: "slope",  url: `${base}/Slope_${siteName}.tif` },
-            { key: "canopy", label: "Canopy height (m)",  ramp: "canopy", url: `${base}/Canopy_Height_${siteName}.tif` },
-            { key: "loss",   label: "Recent forest loss", ramp: "loss",   url: `${base}/GLAD_Loss_${siteName}.tif` }
+            { key: "slope",  label: "Slope (%)",        ramp: "slope",  opacity: 0.9,
+              url: `${base}/Slope_${siteName}.tif` },
+            { key: "canopy", label: "Existing canopy",  ramp: "canopy", threshold: canopyPct,
+              url: `${base}/Canopy_Fraction_${siteName}.tif` },
+            { key: "loss",   label: "Recent forest loss (last decade)", ramp: "loss",
+              url: `${base}/GLAD_Loss_${siteName}.tif` }
         ];
 
         for (const v of vectors) {
@@ -1142,23 +1170,28 @@
     }
 
     // ---- raster rendering (geotiff.js + proj4) ----
-    const RASTER_RAMPS = {
-        slope:  (v, mn, mx) => rampColor(v, mn, mx, [[34,197,94],[250,204,21],[220,38,38]]),
-        canopy: (v, mn, mx) => rampColor(v, mn, mx, [[237,247,237],[16,122,87],[5,46,22]]),
-        loss:   ()          => [220, 38, 38]   // presence = loss
+    // Hansen lossyear code; 16 = 2016 (~last decade). Pixels with a loss year >=
+    // this are shown; the GLAD_Loss raster itself is unchanged in the pipeline.
+    const LOSS_YEAR_MIN_CODE = 16;
+
+    // Each classifier returns [r,g,b] for an opaque pixel, or null for transparent.
+    const RASTER_CLASSIFY = {
+        // Grayscale: low slope -> black, high slope -> white (over the data range).
+        slope:  (v, mn, mx) => { const g = grayLevel(v, mn, mx); return [g, g, g]; },
+        // Binary: a cell whose canopy % meets the eligibility cutoff -> dark green.
+        canopy: (v, mn, mx, thr) => (v >= thr ? [20, 83, 45] : null),
+        // Binary: a pixel with last-decade loss -> red.
+        loss:   (v) => (v >= LOSS_YEAR_MIN_CODE ? [220, 38, 38] : null)
     };
-    function rampColor(v, mn, mx, stops) {
-        if (mx <= mn) return stops[stops.length - 1];
+    function grayLevel(v, mn, mx) {
+        if (mx <= mn) return 255;
         const t = Math.max(0, Math.min(1, (v - mn) / (mx - mn)));
-        const seg = t * (stops.length - 1);
-        const i = Math.min(stops.length - 2, Math.floor(seg));
-        const f = seg - i, a = stops[i], b = stops[i + 1];
-        return [Math.round(a[0]+(b[0]-a[0])*f), Math.round(a[1]+(b[1]-a[1])*f), Math.round(a[2]+(b[2]-a[2])*f)];
+        return Math.round(255 * t);   // low -> 0 (black), high -> 255 (white)
     }
     function rasterSwatch(ramp) {
-        if (ramp === "canopy") return "#107a57";
+        if (ramp === "canopy") return "#14532d";
         if (ramp === "loss")   return "#dc2626";
-        return "#facc15";   // slope
+        return "#9ca3af";   // slope (gray)
     }
     function utmProjForEpsg(epsg) {
         // 326zz = WGS84 / UTM north zone zz; 327zz = south.
@@ -1199,16 +1232,18 @@
         }
         if (!isFinite(mn)) { mn = 0; mx = 1; }
 
-        // Colorize to an RGBA canvas; nodata/masked pixels are transparent.
+        // Colorize to an RGBA canvas; nodata/masked and classified-out pixels are
+        // transparent.
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext("2d");
         const img = ctx.createImageData(width, height);
-        const rampFn = RASTER_RAMPS[spec.ramp] || RASTER_RAMPS.slope;
+        const classify = RASTER_CLASSIFY[spec.ramp] || RASTER_CLASSIFY.slope;
         for (let i = 0; i < data.length; i++) {
             const v = data[i], o = i * 4;
             if (v === nodata || !isFinite(v)) { img.data[o + 3] = 0; continue; }
-            const c = rampFn(v, mn, mx);
+            const c = classify(v, mn, mx, spec.threshold);
+            if (!c) { img.data[o + 3] = 0; continue; }   // classified-out -> transparent
             img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
         }
         ctx.putImageData(img, 0, 0);
@@ -1222,7 +1257,8 @@
         });
         map.addLayer({ id: layerId, type: "raster", source: sourceId,
             layout: { visibility: "none" },
-            paint: { "raster-opacity": 0.75 } });
+            paint: { "raster-opacity": (spec.opacity != null ? spec.opacity : 0.85),
+                     "raster-resampling": "nearest" } });
 
         const rec = { key: spec.key, sourceId, layerIds: [layerId] };
         runEntry.contextLayers.push(rec);
