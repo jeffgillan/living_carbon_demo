@@ -273,18 +273,23 @@
                 <label class="param-label">Max slope (%)
                     <input type="number" id="slope-threshold" min="0" max="100" step="1" value="30">
                 </label>
-                <label class="param-label">Canopy NDVI threshold
-                    <input type="number" id="ndvi-threshold" min="-1" max="1" step="0.01" value="0.53">
+                <label class="param-label">Min canopy height (m)
+                    <input type="number" id="canopy-height" min="0" max="100" step="0.5" value="2">
                 </label>
-                <p class="param-hint">Terrain up to this slope is eligible (default 30%). NDVI above the threshold is treated as existing tree canopy and excluded (default 0.53).</p>
+                <label class="param-label">Max canopy cover (%)
+                    <input type="number" id="canopy-pct" min="0" max="100" step="1" value="50">
+                </label>
+                <p class="param-hint">Terrain up to this slope is eligible (default 30%). A pixel taller than the min canopy height (default 2 m) counts as existing canopy; cells with more than the max canopy cover (default 50%) are excluded as already-forested.</p>
             </details>
             <button id="calc-btn" disabled>Calculate Plantable Acres</button>
             <p class="meta" id="job-status">Draw or upload an AOI to begin.</p>
 
             <div id="progress-tracker">
                 <div class="step-row pending" data-step="start"><span class="step-icon">○</span><span class="step-label">Starting worker</span></div>
-                <div class="step-row pending" data-step="exports"><span class="step-icon">○</span><span class="step-label">Earth Engine exports</span></div>
-                <div class="step-row pending" data-step="terrain"><span class="step-icon">○</span><span class="step-label">Terrain &amp; canopy</span></div>
+                <div class="step-row pending" data-step="canopy"><span class="step-icon">○</span><span class="step-label">Canopy height</span></div>
+                <div class="step-row pending" data-step="dem"><span class="step-icon">○</span><span class="step-label">DEM &amp; terrain</span></div>
+                <div class="step-row pending" data-step="forest_loss"><span class="step-icon">○</span><span class="step-label">Forest loss</span></div>
+                <div class="step-row pending" data-step="raster_elig"><span class="step-icon">○</span><span class="step-label">Combine eligibility</span></div>
                 <div class="step-row pending" data-step="wetlands"><span class="step-icon">○</span><span class="step-label">Wetlands</span></div>
                 <div class="step-row pending" data-step="hydric"><span class="step-icon">○</span><span class="step-label">Hydric soils</span></div>
                 <div class="step-row pending" data-step="nci"><span class="step-icon">○</span><span class="step-label">Albedo / NCI</span></div>
@@ -348,8 +353,9 @@
     const $log      = document.getElementById("log-pane");
     const $passcode = document.getElementById("passcode");
     const $site     = document.getElementById("site-name");
-    const $slope    = document.getElementById("slope-threshold");
-    const $ndvi     = document.getElementById("ndvi-threshold");
+    const $slope      = document.getElementById("slope-threshold");
+    const $canopyH    = document.getElementById("canopy-height");
+    const $canopyPct  = document.getElementById("canopy-pct");
     const $tracker  = document.getElementById("progress-tracker");
     const $metrics  = document.getElementById("live-metrics");
 
@@ -627,22 +633,28 @@
         const nPolys = (currentAOI.features || []).length;
 
         // Advanced parameters → query string (the pipeline also re-validates).
-        const slope = $slope.value.trim();
-        const ndvi  = $ndvi.value.trim();
+        const slope     = $slope.value.trim();
+        const canopyH   = $canopyH.value.trim();
+        const canopyPct = $canopyPct.value.trim();
         if (slope !== "" && (isNaN(+slope) || +slope < 0 || +slope > 100)) {
             alert("Max slope (%) must be a number between 0 and 100.");
             jobInFlight = false; refreshCalcButton(); return;
         }
-        if (ndvi !== "" && (isNaN(+ndvi) || +ndvi < -1 || +ndvi > 1)) {
-            alert("Canopy NDVI threshold must be a number between -1 and 1.");
+        if (canopyH !== "" && (isNaN(+canopyH) || +canopyH < 0 || +canopyH > 100)) {
+            alert("Min canopy height (m) must be a number between 0 and 100.");
+            jobInFlight = false; refreshCalcButton(); return;
+        }
+        if (canopyPct !== "" && (isNaN(+canopyPct) || +canopyPct < 0 || +canopyPct > 100)) {
+            alert("Max canopy cover (%) must be a number between 0 and 100.");
             jobInFlight = false; refreshCalcButton(); return;
         }
         let runUrl = `${BOUNCER_URL}/run?site_name=${encodeURIComponent(siteName)}`;
-        if (slope !== "") runUrl += `&slope_threshold_pct=${encodeURIComponent(slope)}`;
-        if (ndvi  !== "") runUrl += `&ndvi_canopy_threshold=${encodeURIComponent(ndvi)}`;
+        if (slope     !== "") runUrl += `&slope_threshold_pct=${encodeURIComponent(slope)}`;
+        if (canopyH   !== "") runUrl += `&min_canopy_height_m=${encodeURIComponent(canopyH)}`;
+        if (canopyPct !== "") runUrl += `&canopy_pct_threshold=${encodeURIComponent(canopyPct)}`;
 
         appendLog(`Submitting AOI (${nPolys} polygon${nPolys === 1 ? "" : "s"})` +
-                  ` — slope ≤ ${slope || "30"}%, NDVI threshold ${ndvi || "0.53"}…\n`);
+                  ` — slope ≤ ${slope || "30"}%, canopy ≥ ${canopyH || "2"} m, cover < ${canopyPct || "50"}%…\n`);
 
         // POST /run via bouncer
         let jobId;
@@ -756,9 +768,10 @@
     // ================================================================
     // PROGRESS TRACKER (parsed from the streamed pipeline log)
     // ================================================================
-    const STEP_ORDER = ["start", "exports", "terrain", "wetlands", "hydric", "nci", "integration"];
+    const STEP_ORDER = ["start", "canopy", "dem", "forest_loss", "raster_elig", "wetlands", "hydric", "nci", "integration"];
     const STEP_LABEL = {
-        start: "Starting worker", exports: "Earth Engine exports", terrain: "Terrain & canopy",
+        start: "Starting worker", canopy: "Canopy height", dem: "DEM & terrain",
+        forest_loss: "Forest loss", raster_elig: "Combine eligibility",
         wetlands: "Wetlands", hydric: "Hydric soils", nci: "Albedo / NCI", integration: "Final integration"
     };
     const STEP_ICON = { pending: "○", running: "◐", done: "✓", skipped: "⏭", error: "✕" };
@@ -800,9 +813,11 @@
 
         // "finished" markers come from the reliable result lines the pipeline emits.
         const finished = {
-            start:       has(/GEE Exports|Started GEE task|AOI:\s*[\d.]/),
-            exports:     has(/Downloaded:|Terrain, Canopy/),
-            terrain:     has(/Terrain\/canopy eligible area:/),
+            start:       has(/AOI:\s*[\d.]|Started GEE task/),
+            canopy:      has(/Downloaded:\s*Canopy_Fraction/),
+            dem:         has(/Downloaded:\s*Slope_/),
+            forest_loss: has(/Downloaded:\s*GLAD_Loss/),
+            raster_elig: has(/Raster-eligible area:/),
             wetlands:    has(/After wetland exclusion:|No (NWI )?wetlands/i),
             hydric:      has(/After hydric soil exclusion:|No hydric soil/i),
             nci:         has(/NCI flag:/),
@@ -819,10 +834,8 @@
 
         // Live metrics, filled in as the numbers appear in the log.
         const metrics = [];
-        const exp = b.match(/(\d)\/7 exports in GCS/g);
-        if (exp) { const last = exp[exp.length - 1].match(/(\d)\/7/); if (last) metrics.push(["Satellite exports", `${last[1]}/7`]); }
         const aoiAc  = grab(/AOI:\s*([\d.]+)\s*total acres/);          if (aoiAc)  metrics.push(["AOI area", `${aoiAc} ac`]);
-        const terrAc = grab(/Terrain\/canopy eligible area:\s*([\d.]+)/); if (terrAc) metrics.push(["After terrain/canopy", `${terrAc} ac`]);
+        const terrAc = grab(/Raster-eligible area:\s*([\d.]+)/);       if (terrAc) metrics.push(["After slope/canopy/loss", `${terrAc} ac`]);
         const wetAc  = grab(/After wetland exclusion:\s*([\d.]+)/);     if (wetAc)  metrics.push(["After wetlands", `${wetAc} ac`]);
         const hydAc  = grab(/After hydric soil exclusion:\s*([\d.]+)/); if (hydAc)  metrics.push(["After hydric soils", `${hydAc} ac`]);
         const fin = b.match(/Final eligible area:\s*([\d.]+)\s*ac\s*\(([\d.]+)%/);
@@ -838,7 +851,7 @@
 
     function refreshHeadline() {
         // Until real pipeline output arrives, keep the friendly booting message.
-        if (!/GEE Exports|Started GEE task|AOI:\s*[\d.]|exports in GCS/.test(logBuffer)) {
+        if (!/Started GEE task|AOI:\s*[\d.]|exports in GCS/.test(logBuffer)) {
             setStatus(COLD_START_MSG);
             return;
         }
