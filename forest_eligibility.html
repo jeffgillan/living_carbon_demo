@@ -13,6 +13,10 @@
 
     <script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
 
+    <!-- Client-side GeoTIFF rendering for the raster context layers -->
+    <script src="https://unpkg.com/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+    <script src="https://unpkg.com/proj4@2.11.0/dist/proj4.js"></script>
+
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
@@ -172,6 +176,15 @@
         }
         .layer-actions button:hover { background: #e5e7eb; }
         #toc-empty { font-size: 0.8rem; color: #999; margin-top: 8px; }
+
+        /* Contributing layers nested under a run */
+        .layer-group { margin-top: 8px; }
+        .context-rows { margin: 2px 0 4px 14px; padding-left: 8px; border-left: 2px solid #e5e7eb; }
+        .context-row { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; padding: 2px 0; }
+        .context-row label { flex: 1 1 auto; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .context-row label input { margin-right: 6px; vertical-align: middle; }
+        .context-swatch { width: 11px; height: 11px; border-radius: 2px; flex: none; border: 1px solid rgba(0,0,0,0.2); }
+        .context-empty { font-size: 0.72rem; color: #aaa; padding: 2px 0; }
 
         .back-link {
             display: inline-block;
@@ -685,7 +698,8 @@
             jobId = Array.isArray(data.job_id) ? data.job_id[0] : data.job_id;
             if (!jobId) throw new Error("No job_id in response.");
 
-            activeJob = { id: jobId, siteName: siteName, submittedAt: new Date() };
+            activeJob = { id: jobId, siteName: siteName, submittedAt: new Date(),
+                          wetlandFt: (wetland !== "" ? wetland : "150") };
             setStatus(COLD_START_MSG);
             startElapsed();
             appendLog(`Job started: ${jobId}\n\n=== Live pipeline log ===\n`);
@@ -947,8 +961,13 @@
             return;
         }
 
-        addResultLayer(geojson, { siteName, jobId, url: resultUrl });
+        const runEntry = addResultLayer(geojson, { siteName, jobId, url: resultUrl });
         setStatus("Analysis complete — result added to Map Layers.");
+
+        // Load the contributing context layers (best-effort; any missing layer is
+        // skipped). All have deterministic filenames in the flat run folder.
+        const wetlandFt = (activeJob && activeJob.wetlandFt) ? activeJob.wetlandFt : "150";
+        loadContributingLayers(jobId, siteName, wetlandFt, runEntry);
     }
 
     // ================================================================
@@ -974,7 +993,8 @@
         const pct        = aoiAc > 0 ? (100 * eligibleAc / aoiAc) : null;
 
         const entry = { id, sourceId, fillId, outlineId,
-            siteName: meta.siteName, jobId: meta.jobId, eligibleAc, pct, geojson };
+            siteName: meta.siteName, jobId: meta.jobId, eligibleAc, pct, geojson,
+            contextLayers: [], contextContainer: null, groupEl: null };
         resultLayers.push(entry);
         addTocRow(entry);
 
@@ -982,6 +1002,8 @@
             const b = turf.bbox(geojson);
             map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 50 });
         } catch (e) { /* ignore */ }
+
+        return entry;
     }
 
     function addTocRow(entry) {
@@ -1009,7 +1031,18 @@
 
         row.appendChild(label);
         row.appendChild(actions);
-        document.getElementById("result-layers").appendChild(row);
+
+        // Group wrapper: the run row + a nested container for its context layers.
+        const group = document.createElement("div");
+        group.className = "layer-group";
+        group.dataset.id = entry.id;
+        group.appendChild(row);
+        const contextRows = document.createElement("div");
+        contextRows.className = "context-rows";
+        group.appendChild(contextRows);
+        document.getElementById("result-layers").appendChild(group);
+        entry.groupEl = group;
+        entry.contextContainer = contextRows;
 
         cb.addEventListener("change", (e) => {
             const v = e.target.checked ? "visible" : "none";
@@ -1030,12 +1063,191 @@
             setTimeout(() => URL.revokeObjectURL(url), 1000);
         });
         actions.querySelector('[data-act="remove"]').addEventListener("click", () => {
+            // Eligible polygon layers/source.
             [entry.fillId, entry.outlineId].forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
             if (map.getSource(entry.sourceId)) map.removeSource(entry.sourceId);
+            // All contributing context layers/sources for this run.
+            (entry.contextLayers || []).forEach(c => {
+                (c.layerIds || []).forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+                if (c.sourceId && map.getSource(c.sourceId)) map.removeSource(c.sourceId);
+            });
             const i = resultLayers.indexOf(entry);
             if (i >= 0) resultLayers.splice(i, 1);
-            row.remove();
+            (entry.groupEl || row).remove();
             if (resultLayers.length === 0) document.getElementById("toc-empty").style.display = "block";
+        });
+    }
+
+    // ================================================================
+    // CONTRIBUTING CONTEXT LAYERS
+    // After a run completes, load the layers that contributed to the eligible
+    // polygon: wetland buffer + hydric soils (EPSG:4326 GeoJSON) and slope,
+    // canopy height, recent forest loss (UTM GeoTIFF rasters, rendered client-
+    // side). All live in the flat run folder with deterministic filenames. Each
+    // is added hidden and toggled from a nested row under the run in Map Layers.
+    // Any layer that 404s / errors / is empty is skipped silently.
+    // ================================================================
+    function runFolderBase(jobId) {
+        return `https://storage.googleapis.com/${GCS_BUCKET}/${GCS_OUTPUT_PREFIX}/${jobId}`;
+    }
+
+    async function loadContributingLayers(jobId, siteName, wetlandFt, runEntry) {
+        const base = runFolderBase(jobId);
+        const vectors = [
+            { key: "wetland", label: "Wetland buffer", color: "#2563eb",
+              url: `${base}/${siteName}_wetland_buffer_${wetlandFt}ft.geojson` },
+            { key: "hydric",  label: "Hydric soils",   color: "#92400e",
+              url: `${base}/${siteName}_hydric_soils.geojson` }
+        ];
+        const rasters = [
+            { key: "slope",  label: "Slope (%)",          ramp: "slope",  url: `${base}/Slope_${siteName}.tif` },
+            { key: "canopy", label: "Canopy height (m)",  ramp: "canopy", url: `${base}/Canopy_Height_${siteName}.tif` },
+            { key: "loss",   label: "Recent forest loss", ramp: "loss",   url: `${base}/GLAD_Loss_${siteName}.tif` }
+        ];
+
+        for (const v of vectors) {
+            try {
+                const r = await fetch(v.url, { cache: "no-store" });
+                if (!r.ok) continue;
+                const gj = await r.json();
+                if (!gj || !gj.features || gj.features.length === 0) continue;
+                addVectorContextLayer(gj, v, runEntry);
+            } catch (e) { /* skip missing/erroring layer */ }
+        }
+        for (const rl of rasters) {
+            try {
+                const r = await fetch(rl.url, { cache: "no-store" });
+                if (!r.ok) continue;
+                const buf = await r.arrayBuffer();
+                await addRasterContextLayer(buf, rl, runEntry);
+            } catch (e) {
+                appendLog(`\n(context layer "${rl.label}" could not be rendered: ${e.message})\n`);
+            }
+        }
+    }
+
+    function addVectorContextLayer(geojson, spec, runEntry) {
+        const id = `${runEntry.id}-ctx-${spec.key}`;
+        const sourceId = id, fillId = id + "-fill", lineId = id + "-line";
+        map.addSource(sourceId, { type: "geojson", data: geojson });
+        map.addLayer({ id: fillId, type: "fill", source: sourceId,
+            layout: { visibility: "none" },
+            paint: { "fill-color": spec.color, "fill-opacity": 0.4 } });
+        map.addLayer({ id: lineId, type: "line", source: sourceId,
+            layout: { visibility: "none" },
+            paint: { "line-color": spec.color, "line-width": 1.5 } });
+        const rec = { key: spec.key, sourceId, layerIds: [fillId, lineId] };
+        runEntry.contextLayers.push(rec);
+        addContextTocRow(runEntry, { label: spec.label, swatch: spec.color, layerIds: rec.layerIds });
+    }
+
+    // ---- raster rendering (geotiff.js + proj4) ----
+    const RASTER_RAMPS = {
+        slope:  (v, mn, mx) => rampColor(v, mn, mx, [[34,197,94],[250,204,21],[220,38,38]]),
+        canopy: (v, mn, mx) => rampColor(v, mn, mx, [[237,247,237],[16,122,87],[5,46,22]]),
+        loss:   ()          => [220, 38, 38]   // presence = loss
+    };
+    function rampColor(v, mn, mx, stops) {
+        if (mx <= mn) return stops[stops.length - 1];
+        const t = Math.max(0, Math.min(1, (v - mn) / (mx - mn)));
+        const seg = t * (stops.length - 1);
+        const i = Math.min(stops.length - 2, Math.floor(seg));
+        const f = seg - i, a = stops[i], b = stops[i + 1];
+        return [Math.round(a[0]+(b[0]-a[0])*f), Math.round(a[1]+(b[1]-a[1])*f), Math.round(a[2]+(b[2]-a[2])*f)];
+    }
+    function rasterSwatch(ramp) {
+        if (ramp === "canopy") return "#107a57";
+        if (ramp === "loss")   return "#dc2626";
+        return "#facc15";   // slope
+    }
+    function utmProjForEpsg(epsg) {
+        // 326zz = WGS84 / UTM north zone zz; 327zz = south.
+        const zone  = epsg % 100;
+        const south = Math.floor(epsg / 100) === 327;
+        return `+proj=utm +zone=${zone}${south ? " +south" : ""} +datum=WGS84 +units=m +no_defs`;
+    }
+
+    async function addRasterContextLayer(arrayBuffer, spec, runEntry) {
+        const tiff   = await GeoTIFF.fromArrayBuffer(arrayBuffer);
+        const image  = await tiff.getImage();
+        const width  = image.getWidth();
+        const height = image.getHeight();
+        const data   = (await image.readRasters())[0];
+        const [minX, minY, maxX, maxY] = image.getBoundingBox();   // native CRS
+        let nodata = image.getGDALNoData();
+        nodata = (nodata === null || nodata === undefined) ? null : Number(nodata);
+
+        const geoKeys = image.getGeoKeys() || {};
+        const epsg = geoKeys.ProjectedCSTypeGeoKey || geoKeys.GeographicTypeGeoKey;
+
+        // Reproject the 4 corners to lon/lat for the MapLibre image source.
+        let toLngLat = (x, y) => [x, y];
+        if (epsg && epsg !== 4326) {
+            const def = utmProjForEpsg(epsg);
+            toLngLat = (x, y) => proj4(def, "EPSG:4326", [x, y]);
+        }
+        const TL = toLngLat(minX, maxY), TR = toLngLat(maxX, maxY),
+              BR = toLngLat(maxX, minY), BL = toLngLat(minX, minY);
+
+        // Data range (ignoring nodata) for the color ramp.
+        let mn = Infinity, mx = -Infinity;
+        for (let i = 0; i < data.length; i++) {
+            const v = data[i];
+            if (v === nodata || !isFinite(v)) continue;
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+        }
+        if (!isFinite(mn)) { mn = 0; mx = 1; }
+
+        // Colorize to an RGBA canvas; nodata/masked pixels are transparent.
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        const img = ctx.createImageData(width, height);
+        const rampFn = RASTER_RAMPS[spec.ramp] || RASTER_RAMPS.slope;
+        for (let i = 0; i < data.length; i++) {
+            const v = data[i], o = i * 4;
+            if (v === nodata || !isFinite(v)) { img.data[o + 3] = 0; continue; }
+            const c = rampFn(v, mn, mx);
+            img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
+        }
+        ctx.putImageData(img, 0, 0);
+
+        const id = `${runEntry.id}-ctx-${spec.key}`;
+        const sourceId = id, layerId = id + "-raster";
+        map.addSource(sourceId, {
+            type: "image",
+            url: canvas.toDataURL(),
+            coordinates: [TL, TR, BR, BL]
+        });
+        map.addLayer({ id: layerId, type: "raster", source: sourceId,
+            layout: { visibility: "none" },
+            paint: { "raster-opacity": 0.75 } });
+
+        const rec = { key: spec.key, sourceId, layerIds: [layerId] };
+        runEntry.contextLayers.push(rec);
+        addContextTocRow(runEntry, { label: spec.label, swatch: rasterSwatch(spec.ramp), layerIds: rec.layerIds });
+    }
+
+    function addContextTocRow(runEntry, { label, swatch, layerIds }) {
+        const container = runEntry.contextContainer;
+        if (!container) return;
+        const row = document.createElement("div");
+        row.className = "context-row";
+        const lbl = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox"; cb.checked = false;
+        const sw = document.createElement("span");
+        sw.className = "context-swatch";
+        sw.style.background = swatch;
+        lbl.appendChild(cb);
+        lbl.appendChild(sw);
+        lbl.appendChild(document.createTextNode(" " + label));
+        row.appendChild(lbl);
+        container.appendChild(row);
+        cb.addEventListener("change", (e) => {
+            const v = e.target.checked ? "visible" : "none";
+            layerIds.forEach(id => { if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", v); });
         });
     }
     </script>
