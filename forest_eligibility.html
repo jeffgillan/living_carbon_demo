@@ -279,7 +279,10 @@
                 <label class="param-label">Max canopy cover (%)
                     <input type="number" id="canopy-pct" min="0" max="100" step="1" value="50">
                 </label>
-                <p class="param-hint">Terrain up to this slope is eligible (default 30%). A pixel taller than the min canopy height (default 2 m) counts as existing canopy; cells with more than the max canopy cover (default 50%) are excluded as already-forested.</p>
+                <label class="param-label">Wetland buffer (ft)
+                    <input type="number" id="wetland-buffer" min="0" max="5000" step="10" value="150">
+                </label>
+                <p class="param-hint">Terrain up to this slope is eligible (default 30%). A pixel taller than the min canopy height (default 2 m) counts as existing canopy; cells with more than the max canopy cover (default 50%) are excluded as already-forested. Wetland areas plus this buffer (default 150 ft) are excluded.</p>
             </details>
             <button id="calc-btn" disabled>Calculate Plantable Acres</button>
             <p class="meta" id="job-status">Draw or upload an AOI to begin.</p>
@@ -321,7 +324,7 @@
     const BOUNCER_URL       = "https://pipeline-bouncer-527567483631.us-central1.run.app";
     // TODO: replace with the actual GCS_BUCKET value used by the Cloud Run service.
     const GCS_BUCKET        = "livingcarbon_bucket";
-    const GCS_OUTPUT_PREFIX = "outputs";
+    const GCS_OUTPUT_PREFIX = "reforest_eligibility";
 
     const MAP_CENTER          = [-85, 39];
     const MAP_ZOOM            = 4;
@@ -356,6 +359,7 @@
     const $slope      = document.getElementById("slope-threshold");
     const $canopyH    = document.getElementById("canopy-height");
     const $canopyPct  = document.getElementById("canopy-pct");
+    const $wetland    = document.getElementById("wetland-buffer");
     const $tracker  = document.getElementById("progress-tracker");
     const $metrics  = document.getElementById("live-metrics");
 
@@ -636,6 +640,7 @@
         const slope     = $slope.value.trim();
         const canopyH   = $canopyH.value.trim();
         const canopyPct = $canopyPct.value.trim();
+        const wetland   = $wetland.value.trim();
         if (slope !== "" && (isNaN(+slope) || +slope < 0 || +slope > 100)) {
             alert("Max slope (%) must be a number between 0 and 100.");
             jobInFlight = false; refreshCalcButton(); return;
@@ -648,13 +653,18 @@
             alert("Max canopy cover (%) must be a number between 0 and 100.");
             jobInFlight = false; refreshCalcButton(); return;
         }
+        if (wetland !== "" && (isNaN(+wetland) || +wetland < 0 || +wetland > 5000)) {
+            alert("Wetland buffer (ft) must be a number between 0 and 5000.");
+            jobInFlight = false; refreshCalcButton(); return;
+        }
         let runUrl = `${BOUNCER_URL}/run?site_name=${encodeURIComponent(siteName)}`;
         if (slope     !== "") runUrl += `&slope_threshold_pct=${encodeURIComponent(slope)}`;
         if (canopyH   !== "") runUrl += `&min_canopy_height_m=${encodeURIComponent(canopyH)}`;
         if (canopyPct !== "") runUrl += `&canopy_pct_threshold=${encodeURIComponent(canopyPct)}`;
+        if (wetland   !== "") runUrl += `&wetland_buffer_ft=${encodeURIComponent(wetland)}`;
 
         appendLog(`Submitting AOI (${nPolys} polygon${nPolys === 1 ? "" : "s"})` +
-                  ` — slope ≤ ${slope || "30"}%, canopy ≥ ${canopyH || "2"} m, cover < ${canopyPct || "50"}%…\n`);
+                  ` — slope ≤ ${slope || "30"}%, canopy ≥ ${canopyH || "2"} m, cover < ${canopyPct || "50"}%, wetland buffer ${wetland || "150"} ft…\n`);
 
         // POST /run via bouncer
         let jobId;
@@ -880,11 +890,10 @@
     // FETCH RESULT FROM GCS
     // ================================================================
     function buildResultUrl(jobId, siteName, dateStr) {
-        // Pipeline now uploads to a single-nested path: outputs/<jobId>/final/...
-        // (previously `gcloud storage cp -r` produced outputs/<jobId>/<jobId>/final/...).
-        // Requires the migrated pipeline image to be deployed.
+        // Flat run folder: reforest_eligibility/<jobId>/<site>_eligible_area_<date>.geojson
+        // (no gee_rasters/ or final/ subfolders anymore).
         return `https://storage.googleapis.com/${GCS_BUCKET}/${GCS_OUTPUT_PREFIX}` +
-               `/${jobId}/final/${siteName}_eligible_area_${dateStr}.geojson`;
+               `/${jobId}/${siteName}_eligible_area_${dateStr}.geojson`;
     }
 
     function candidateDates() {
