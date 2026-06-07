@@ -286,16 +286,19 @@
                 <label class="param-label">Max slope (%)
                     <input type="number" id="slope-threshold" min="0" max="100" step="1" value="30">
                 </label>
+                <p class="param-hint">Terrain up to this slope is eligible (default 30%).</p>
                 <label class="param-label">Min canopy height (m)
                     <input type="number" id="canopy-height" min="0" max="100" step="0.5" value="2">
                 </label>
+                <p class="param-hint">A pixel taller than this height counts as existing tree canopy (default 2 m).</p>
                 <label class="param-label">Max canopy cover (%)
                     <input type="number" id="canopy-pct" min="0" max="100" step="1" value="50">
                 </label>
+                <p class="param-hint">Cells with more than this much canopy cover are excluded as already-forested (default 50%).</p>
                 <label class="param-label">Wetland buffer (ft)
                     <input type="number" id="wetland-buffer" min="0" max="5000" step="10" value="150">
                 </label>
-                <p class="param-hint">Terrain up to this slope is eligible (default 30%). A pixel taller than the min canopy height (default 2 m) counts as existing canopy; cells with more than the max canopy cover (default 50%) are excluded as already-forested. Wetland areas plus this buffer (default 150 ft) are excluded.</p>
+                <p class="param-hint">Wetland areas plus this buffer are excluded (default 150 ft).</p>
             </details>
             <button id="calc-btn" disabled>Calculate Plantable Acres</button>
             <p class="meta" id="job-status">Draw or upload an AOI to begin.</p>
