@@ -725,6 +725,8 @@
 
     function pollLogs(jobId, passcode) {
         let offset = 0;
+        let donePolls = 0;
+        const MAX_DONE_POLLS = 12;   // ~18s grace to capture trailing log lines
 
         const tick = async () => {
             try {
@@ -765,6 +767,19 @@
                 if (typeof next === "number") offset = next;
 
                 if (done) {
+                    // status.json flips to "completed" the instant the job ends, but the
+                    // final integration lines (wetland / hydric / NCI summary) land in
+                    // pipeline.log a moment later via the GCS syncer. Keep polling until
+                    // the definitive end marker appears so the acreage waterfall captures
+                    // every step (errors finalize immediately — no such marker expected).
+                    if (status === "completed" &&
+                        !/Pipeline completed successfully/.test(logBuffer) &&
+                        donePolls < MAX_DONE_POLLS) {
+                        donePolls++;
+                        setStatus("Analysis complete — finishing up…");
+                        setTimeout(tick, LOG_POLL_MS);
+                        return;
+                    }
                     stopElapsed();
                     if (status === "completed") {
                         markAllStepsDone();
@@ -1155,6 +1170,23 @@
                 appendLog(`\n(context layer "${rl.label}" could not be rendered: ${e.message})\n`);
             }
         }
+        reorderRunLayers(runEntry);
+    }
+
+    // Enforce the front-to-back stacking once all layers (which load async) exist.
+    // Front (top) → back (bottom): eligible area, wetland buffer, hydric soils,
+    // recent forest loss, existing canopy, slope, then the satellite base layer.
+    // moveLayer(id) with no beforeId sends a layer to the top; iterating
+    // bottom→top leaves them in the intended order.
+    function reorderRunLayers(runEntry) {
+        const byKey = {};
+        (runEntry.contextLayers || []).forEach(c => { byKey[c.key] = c.layerIds; });
+        const bottomToTop = [];
+        ["slope", "canopy", "loss", "hydric", "wetland"].forEach(k => {
+            (byKey[k] || []).forEach(id => bottomToTop.push(id));
+        });
+        bottomToTop.push(runEntry.fillId, runEntry.outlineId);   // eligible area on top
+        bottomToTop.forEach(id => { if (map.getLayer(id)) map.moveLayer(id); });
     }
 
     function addVectorContextLayer(geojson, spec, runEntry) {
