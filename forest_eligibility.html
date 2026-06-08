@@ -138,9 +138,10 @@
         #elapsed { font-size: 0.78rem; color: #777; margin-top: 6px; }
 
         /* Live metrics */
-        #live-metrics { display: none; margin-top: 10px; font-size: 0.85rem; }
-        #live-metrics .metric { display: flex; justify-content: space-between; padding: 2px 0; }
-        #live-metrics .metric span:last-child { font-weight: 600; color: #15803d; }
+        #live-metrics { display: none; margin-top: 10px; font-size: 0.72rem; }
+        #live-metrics .metric { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+        #live-metrics .metric span:first-child { white-space: nowrap; }
+        #live-metrics .metric span:last-child { font-weight: 600; color: #15803d; white-space: nowrap; }
 
         /* Map layers table of contents */
         .layer-toggle {
@@ -901,7 +902,7 @@
             for (const [label, val] of stages) {
                 if (val == null) continue;
                 const removed = Math.max(0, prev - val);
-                rows.push([`− ${label}`, `${fmt(removed)} ac removed → ${fmt(val)} ac`]);
+                rows.push([`− ${label}`, `${fmt(removed)} ac removed`]);
                 prev = val;
             }
             if (finM)    rows.push(["Final eligible", `${finM[1]} ac (${finM[2]}%)`]);
@@ -1214,9 +1215,11 @@
 
     // Each classifier returns [r,g,b] for an opaque pixel, or null for transparent.
     const RASTER_CLASSIFY = {
-        // Binary: the slope raster is already thresholded server-side (1 = slope >
-        // threshold), so any valid pixel is "too steep" -> off-white.
-        slope:  () => [245, 245, 240],
+        // Binary: the slope raster is thresholded server-side (1 = slope > threshold,
+        // background 0 / nodata). Only color the steep pixels (value 1) off-white;
+        // everything else is transparent. (The 0 background isn't always tagged as
+        // nodata in the browser, so we must threshold here rather than color all valid.)
+        slope:  (v) => (v >= 1 ? [245, 245, 240] : null),
         // Binary: a cell whose canopy % meets the eligibility cutoff -> dark green.
         canopy: (v, mn, mx, thr) => (v >= thr ? [20, 83, 45] : null),
         // Binary: a pixel with last-decade loss -> red.
