@@ -260,7 +260,6 @@
     <div id="map"></div>
 
     <div id="control-panel">
-        <a href="index.html" class="back-link">&larr; Back</a>
         <div class="app-header">
             <img src="lc_logo.png" alt="Living Carbon logo" class="app-logo">
             <h2>Reforestation Eligibility</h2>
@@ -703,7 +702,8 @@
 
             activeJob = { id: jobId, siteName: siteName, submittedAt: new Date(),
                           wetlandFt: (wetland !== "" ? wetland : "150"),
-                          canopyPct: (canopyPct !== "" ? canopyPct : "50") };
+                          canopyPct: (canopyPct !== "" ? canopyPct : "50"),
+                          slopeThreshold: (slope !== "" ? slope : "30") };
             setStatus(COLD_START_MSG);
             startElapsed();
             appendLog(`Job started: ${jobId}\n\n=== Live pipeline log ===\n`);
@@ -1010,7 +1010,8 @@
         // skipped). All have deterministic filenames in the flat run folder.
         const wetlandFt = (activeJob && activeJob.wetlandFt) ? activeJob.wetlandFt : "150";
         const canopyPct = (activeJob && activeJob.canopyPct) ? Number(activeJob.canopyPct) : 50;
-        loadContributingLayers(jobId, siteName, wetlandFt, canopyPct, runEntry);
+        const slopeThr  = (activeJob && activeJob.slopeThreshold) ? activeJob.slopeThreshold : "30";
+        loadContributingLayers(jobId, siteName, wetlandFt, canopyPct, slopeThr, runEntry);
     }
 
     // ================================================================
@@ -1134,7 +1135,7 @@
         return `https://storage.googleapis.com/${GCS_BUCKET}/${GCS_OUTPUT_PREFIX}/${jobId}`;
     }
 
-    async function loadContributingLayers(jobId, siteName, wetlandFt, canopyPct, runEntry) {
+    async function loadContributingLayers(jobId, siteName, wetlandFt, canopyPct, slopeThr, runEntry) {
         const base = runFolderBase(jobId);
         const vectors = [
             { key: "wetland", label: "Wetland buffer", color: "#2563eb",
@@ -1143,7 +1144,7 @@
               url: `${base}/${siteName}_hydric_soils.geojson` }
         ];
         const rasters = [
-            { key: "slope",  label: "Slope (%)",        ramp: "slope",  opacity: 0.9,
+            { key: "slope",  label: `Steep slope (> ${slopeThr}%)`, ramp: "slope",  opacity: 0.8,
               url: `${base}/Slope_${siteName}.tif` },
             { key: "canopy", label: "Existing canopy",  ramp: "canopy", threshold: canopyPct,
               url: `${base}/Canopy_Fraction_${siteName}.tif` },
@@ -1201,7 +1202,9 @@
             paint: { "line-color": spec.color, "line-width": 1.5 } });
         const rec = { key: spec.key, sourceId, layerIds: [fillId, lineId] };
         runEntry.contextLayers.push(rec);
-        addContextTocRow(runEntry, { label: spec.label, swatch: spec.color, layerIds: rec.layerIds });
+        const filename = spec.url.split("/").pop();
+        addContextTocRow(runEntry, { label: spec.label, swatch: spec.color, layerIds: rec.layerIds,
+            onDownload: () => saveBlob(new Blob([JSON.stringify(geojson)], { type: "application/geo+json" }), filename) });
     }
 
     // ---- raster rendering (geotiff.js + proj4) ----
@@ -1211,22 +1214,18 @@
 
     // Each classifier returns [r,g,b] for an opaque pixel, or null for transparent.
     const RASTER_CLASSIFY = {
-        // Grayscale: low slope -> black, high slope -> white (over the data range).
-        slope:  (v, mn, mx) => { const g = grayLevel(v, mn, mx); return [g, g, g]; },
+        // Binary: the slope raster is already thresholded server-side (1 = slope >
+        // threshold), so any valid pixel is "too steep" -> off-white.
+        slope:  () => [245, 245, 240],
         // Binary: a cell whose canopy % meets the eligibility cutoff -> dark green.
         canopy: (v, mn, mx, thr) => (v >= thr ? [20, 83, 45] : null),
         // Binary: a pixel with last-decade loss -> red.
         loss:   (v) => (v >= LOSS_YEAR_MIN_CODE ? [220, 38, 38] : null)
     };
-    function grayLevel(v, mn, mx) {
-        if (mx <= mn) return 255;
-        const t = Math.max(0, Math.min(1, (v - mn) / (mx - mn)));
-        return Math.round(255 * t);   // low -> 0 (black), high -> 255 (white)
-    }
     function rasterSwatch(ramp) {
         if (ramp === "canopy") return "#14532d";
         if (ramp === "loss")   return "#dc2626";
-        return "#9ca3af";   // slope (gray)
+        return "#f5f5f0";   // slope (off-white)
     }
     function utmProjForEpsg(epsg) {
         // 326zz = WGS84 / UTM north zone zz; 327zz = south.
@@ -1297,10 +1296,21 @@
 
         const rec = { key: spec.key, sourceId, layerIds: [layerId] };
         runEntry.contextLayers.push(rec);
-        addContextTocRow(runEntry, { label: spec.label, swatch: rasterSwatch(spec.ramp), layerIds: rec.layerIds });
+        const filename = spec.url.split("/").pop();
+        addContextTocRow(runEntry, { label: spec.label, swatch: rasterSwatch(spec.ramp), layerIds: rec.layerIds,
+            onDownload: () => saveBlob(new Blob([arrayBuffer], { type: "image/tiff" }), filename) });
     }
 
-    function addContextTocRow(runEntry, { label, swatch, layerIds }) {
+    // Trigger a browser download of a Blob with the given filename.
+    function saveBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function addContextTocRow(runEntry, { label, swatch, layerIds, onDownload }) {
         const container = runEntry.contextContainer;
         if (!container) return;
         const row = document.createElement("div");
@@ -1315,6 +1325,17 @@
         lbl.appendChild(sw);
         lbl.appendChild(document.createTextNode(" " + label));
         row.appendChild(lbl);
+        if (onDownload) {
+            const actions = document.createElement("span");
+            actions.className = "layer-actions";
+            const dl = document.createElement("button");
+            dl.setAttribute("data-act", "download");
+            dl.title = "Download layer";
+            dl.textContent = "⭳";
+            dl.addEventListener("click", (e) => { e.preventDefault(); onDownload(); });
+            actions.appendChild(dl);
+            row.appendChild(actions);
+        }
         container.appendChild(row);
         cb.addEventListener("change", (e) => {
             const v = e.target.checked ? "visible" : "none";
