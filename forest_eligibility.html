@@ -187,6 +187,8 @@
         .context-row label input { margin-right: 6px; vertical-align: middle; }
         .context-swatch { width: 11px; height: 11px; border-radius: 2px; flex: none; border: 1px solid rgba(0,0,0,0.2); }
         .context-empty { font-size: 0.72rem; color: #aaa; padding: 2px 0; }
+        .context-subhead { font-size: 0.72rem; font-weight: 600; color: #6b7280; margin: 6px 0 2px; }
+        .context-dl-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         .back-link {
             display: inline-block;
@@ -1190,6 +1192,60 @@
             }
         }
         reorderRunLayers(runEntry);
+
+        // Download-only products (native 10 m rasters + the run log). These are NOT
+        // drawn on the map — just buttons that fetch the file from GCS on click.
+        // (`base` is the run-folder URL already defined at the top of this function.)
+        addDownloadHeading(runEntry, "Downloads");
+        addDownloadRow(runEntry, "Slope % (10 m)",      `${base}/Slope_pct_10m_${siteName}.tif`,     `Slope_pct_10m_${siteName}.tif`);
+        addDownloadRow(runEntry, "Aspect (10 m)",       `${base}/Aspect_10m_${siteName}.tif`,        `Aspect_10m_${siteName}.tif`);
+        addDownloadRow(runEntry, "Canopy height (10 m)",`${base}/Canopy_Height_10m_${siteName}.tif`, `Canopy_Height_10m_${siteName}.tif`);
+        addDownloadRow(runEntry, "Run log",             `${base}/pipeline.log`,                      `${siteName}_log.txt`);
+    }
+
+    // A small sub-heading row inside a run group's nested container.
+    function addDownloadHeading(runEntry, text) {
+        const container = runEntry.contextContainer;
+        if (!container) return;
+        const h = document.createElement("div");
+        h.className = "context-subhead";
+        h.textContent = text;
+        container.appendChild(h);
+    }
+
+    // A download-only row (no checkbox, no map layer): label + ⭳ button that fetches
+    // the GCS file on click and saves it via saveBlob(). Alerts on 404/error.
+    function addDownloadRow(runEntry, label, url, filename) {
+        const container = runEntry.contextContainer;
+        if (!container) return;
+        const row = document.createElement("div");
+        row.className = "context-row";
+        const lbl = document.createElement("span");
+        lbl.className = "context-dl-label";
+        lbl.textContent = label;
+        const actions = document.createElement("span");
+        actions.className = "layer-actions";
+        const dl = document.createElement("button");
+        dl.setAttribute("data-act", "download");
+        dl.title = "Download";
+        dl.textContent = "⭳";
+        dl.addEventListener("click", async (e) => {
+            e.preventDefault();
+            dl.disabled = true;
+            try {
+                const r = await fetch(url, { cache: "no-store" });
+                if (!r.ok) { alert(`${filename} is not available (HTTP ${r.status}).`); return; }
+                saveBlob(await r.blob(), filename);
+            } catch (err) {
+                alert(`Download failed: ${err.message}`);
+            } finally {
+                dl.disabled = false;
+            }
+        });
+        actions.appendChild(dl);
+        row.appendChild(lbl);
+        row.appendChild(actions);
+        container.appendChild(row);
     }
 
     // Enforce the front-to-back stacking once all layers (which load async) exist.
