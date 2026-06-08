@@ -142,6 +142,7 @@
         #live-metrics .metric { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
         #live-metrics .metric span:first-child { white-space: nowrap; }
         #live-metrics .metric span:last-child { font-weight: 600; color: #15803d; white-space: nowrap; }
+        #live-metrics .metric-note { font-size: 0.68rem; font-style: italic; color: #999; margin-top: 4px; white-space: normal; }
 
         /* Map layers table of contents */
         .layer-toggle {
@@ -292,8 +293,8 @@
                     <input type="number" id="canopy-height" min="0" max="100" step="0.5" value="2">
                 </label>
                 <label class="param-label">Max canopy cover (%)
-                    <span class="param-hint">Cells with more than this much canopy cover are excluded as already-forested (default 50%).</span>
-                    <input type="number" id="canopy-pct" min="0" max="100" step="1" value="50">
+                    <span class="param-hint">Cells with more than this much canopy cover are excluded as already-forested (default 10%).</span>
+                    <input type="number" id="canopy-pct" min="0" max="100" step="1" value="10">
                 </label>
                 <label class="param-label">Wetland buffer (ft)
                     <span class="param-hint">Wetland areas plus this buffer are excluded (default 150 ft).</span>
@@ -401,14 +402,14 @@
         style: {
             version: 8,
             sources: {
-                'esri-imagery': {
+                'google-imagery': {
                     type: 'raster',
                     tiles: ['https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'],
                     tileSize: 256,
-                    attribution: 'Tiles &copy; Esri'
+                    attribution: 'Tiles &copy; Google'
                 }
             },
-            layers: [{ id: 'esri-imagery-layer', type: 'raster', source: 'esri-imagery' }]
+            layers: [{ id: 'google-imagery-layer', type: 'raster', source: 'google-imagery' }]
         },
         center: MAP_CENTER,
         zoom: MAP_ZOOM
@@ -614,8 +615,8 @@
 
     // Base-layer toggles in the Map Layers table of contents.
     document.getElementById('toggle-imagery').addEventListener('change', function (e) {
-        if (map.getLayer('esri-imagery-layer'))
-            map.setLayoutProperty('esri-imagery-layer', 'visibility', e.target.checked ? 'visible' : 'none');
+        if (map.getLayer('google-imagery-layer'))
+            map.setLayoutProperty('google-imagery-layer', 'visibility', e.target.checked ? 'visible' : 'none');
     });
     document.getElementById('toggle-aoi').addEventListener('change', function (e) {
         const v = e.target.checked ? 'visible' : 'none';
@@ -703,7 +704,7 @@
 
             activeJob = { id: jobId, siteName: siteName, submittedAt: new Date(),
                           wetlandFt: (wetland !== "" ? wetland : "150"),
-                          canopyPct: (canopyPct !== "" ? canopyPct : "50"),
+                          canopyPct: (canopyPct !== "" ? canopyPct : "10"),
                           slopeThreshold: (slope !== "" ? slope : "30") };
             setStatus(COLD_START_MSG);
             startElapsed();
@@ -888,30 +889,46 @@
         const r4 = num(/After area filter[^:]*:\s*([\d.]+)/);
         const finM = b.match(/Final eligible area:\s*([\d.]+)\s*ac\s*\(([\d.]+)%/);
         const nciFlag = grab(/NCI flag:\s*(\w+)/);
+        // Per-layer gross flagged areas (overlapping; logged by raster_eligibility.R).
+        const slopeAc  = num(/Steep slope area[^:]*:\s*([\d.]+)/);
+        const canopyAc = num(/Existing canopy area[^:]*:\s*([\d.]+)/);
+        const lossAc   = num(/Recent forest loss area:\s*([\d.]+)/);
 
         const rows = [];
+        let haveBreakouts = false;
         if (aoiAc != null) {
             rows.push(["Total AOI", `${fmt(aoiAc)} ac`]);
             let prev = aoiAc;
+            // Combined raster step (net removed) + indented per-layer breakouts.
+            if (r1 != null) {
+                rows.push(["− Slope / canopy / forest loss", `${fmt(Math.max(0, prev - r1))} ac removed`]);
+                if (slopeAc  != null) { rows.push(["&nbsp;&nbsp;&nbsp;Steep slope",        `${fmt(slopeAc)} ac`]);  haveBreakouts = true; }
+                if (canopyAc != null) { rows.push(["&nbsp;&nbsp;&nbsp;Existing canopy",    `${fmt(canopyAc)} ac`]); haveBreakouts = true; }
+                if (lossAc   != null) { rows.push(["&nbsp;&nbsp;&nbsp;Recent forest loss", `${fmt(lossAc)} ac`]);   haveBreakouts = true; }
+                prev = r1;
+            }
+            // Net-delta exclusion stages.
             const stages = [
-                ["Slope / canopy / forest loss", r1],
                 ["Wetland buffer", r2],
                 ["Hydric soils", r3],
                 ["Min size + smoothing", r4]
             ];
             for (const [label, val] of stages) {
                 if (val == null) continue;
-                const removed = Math.max(0, prev - val);
-                rows.push([`− ${label}`, `${fmt(removed)} ac removed`]);
+                rows.push([`− ${label}`, `${fmt(Math.max(0, prev - val))} ac removed`]);
                 prev = val;
             }
             if (finM)    rows.push(["Final eligible", `${finM[1]} ac (${finM[2]}%)`]);
-            if (nciFlag) rows.push(["NCI flag", nciFlag]);
+            if (nciFlag) rows.push(["Albedo flag", nciFlag]);
         }
 
         if (rows.length) {
             $metrics.style.display = "block";
-            $metrics.innerHTML = rows.map(([k, v]) => `<div class="metric"><span>${k}</span><span>${v}</span></div>`).join("");
+            let html = rows.map(([k, v]) => `<div class="metric"><span>${k}</span><span>${v}</span></div>`).join("");
+            if (haveBreakouts) {
+                html += `<div class="metric-note">* Due to potential overlap of layers, acres might not sum perfectly</div>`;
+            }
+            $metrics.innerHTML = html;
         }
         refreshHeadline();
     }
@@ -1010,7 +1027,7 @@
         // Load the contributing context layers (best-effort; any missing layer is
         // skipped). All have deterministic filenames in the flat run folder.
         const wetlandFt = (activeJob && activeJob.wetlandFt) ? activeJob.wetlandFt : "150";
-        const canopyPct = (activeJob && activeJob.canopyPct) ? Number(activeJob.canopyPct) : 50;
+        const canopyPct = (activeJob && activeJob.canopyPct) ? Number(activeJob.canopyPct) : 10;
         const slopeThr  = (activeJob && activeJob.slopeThreshold) ? activeJob.slopeThreshold : "30";
         loadContributingLayers(jobId, siteName, wetlandFt, canopyPct, slopeThr, runEntry);
     }
