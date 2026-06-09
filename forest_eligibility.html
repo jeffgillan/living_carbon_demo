@@ -889,7 +889,6 @@
         const r2 = num(/After wetland exclusion:\s*([\d.]+)/);
         const r3 = num(/After hydric soil exclusion:\s*([\d.]+)/);
         const r4 = num(/After area filter[^:]*:\s*([\d.]+)/);
-        const finM = b.match(/Final eligible area:\s*([\d.]+)\s*ac\s*\(([\d.]+)%/);
         const nciFlag = grab(/NCI flag:\s*(\w+)/);
         // Per-layer gross flagged areas (overlapping; logged by raster_eligibility.R).
         const slopeAc  = num(/Steep slope area[^:]*:\s*([\d.]+)/);
@@ -920,7 +919,11 @@
                 rows.push([`− ${label}`, `${fmt(Math.max(0, prev - val))} ac removed`]);
                 prev = val;
             }
-            if (finM)    rows.push(["Final eligible", `${finM[1]} ac (${finM[2]}%)`]);
+            // Final eligible = the last remaining acreage in the waterfall (= the
+            // after-smoothing value). Computed from `prev` so it doesn't depend on the
+            // exact wording of the log's summary line.
+            const pctF = aoiAc ? ` (${(100 * prev / aoiAc).toFixed(1)}%)` : "";
+            rows.push(["Final eligible", `${fmt(prev)} ac${pctF}`]);
             if (nciFlag) rows.push(["Albedo flag", nciFlag]);
         }
 
