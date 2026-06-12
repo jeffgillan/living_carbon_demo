@@ -302,6 +302,10 @@
                     <span class="param-hint">Wetland areas plus this buffer are excluded (default 150 ft).</span>
                     <input type="number" id="wetland-buffer" min="0" max="5000" step="10" value="150">
                 </label>
+                <label class="param-label">Minimum patch size (acres)
+                    <span class="param-hint">Eligible patches smaller than this are dropped from the final result (default 1 ac).</span>
+                    <input type="number" id="min-patch" min="0" max="1000" step="0.5" value="1">
+                </label>
             </details>
             <button id="calc-btn" disabled>Calculate Plantable Acres</button>
             <p class="meta" id="job-status">Draw or upload an AOI to begin.</p>
@@ -379,6 +383,7 @@
     const $canopyH    = document.getElementById("canopy-height");
     const $canopyPct  = document.getElementById("canopy-pct");
     const $wetland    = document.getElementById("wetland-buffer");
+    const $minPatch   = document.getElementById("min-patch");
     const $tracker  = document.getElementById("progress-tracker");
     const $metrics  = document.getElementById("live-metrics");
 
@@ -660,6 +665,7 @@
         const canopyH   = $canopyH.value.trim();
         const canopyPct = $canopyPct.value.trim();
         const wetland   = $wetland.value.trim();
+        const minPatch  = $minPatch.value.trim();
         if (slope !== "" && (isNaN(+slope) || +slope < 0 || +slope > 100)) {
             alert("Max slope (%) must be a number between 0 and 100.");
             jobInFlight = false; refreshCalcButton(); return;
@@ -676,14 +682,19 @@
             alert("Wetland buffer (ft) must be a number between 0 and 5000.");
             jobInFlight = false; refreshCalcButton(); return;
         }
+        if (minPatch !== "" && (isNaN(+minPatch) || +minPatch < 0 || +minPatch > 1000)) {
+            alert("Minimum patch size (acres) must be a number between 0 and 1000.");
+            jobInFlight = false; refreshCalcButton(); return;
+        }
         let runUrl = `${BOUNCER_URL}/run?site_name=${encodeURIComponent(siteName)}`;
         if (slope     !== "") runUrl += `&slope_threshold_pct=${encodeURIComponent(slope)}`;
         if (canopyH   !== "") runUrl += `&min_canopy_height_m=${encodeURIComponent(canopyH)}`;
         if (canopyPct !== "") runUrl += `&canopy_pct_threshold=${encodeURIComponent(canopyPct)}`;
         if (wetland   !== "") runUrl += `&wetland_buffer_ft=${encodeURIComponent(wetland)}`;
+        if (minPatch  !== "") runUrl += `&min_patch_acres=${encodeURIComponent(minPatch)}`;
 
         appendLog(`Submitting AOI (${nPolys} polygon${nPolys === 1 ? "" : "s"})` +
-                  ` — slope ≤ ${slope || "30"}%, canopy ≥ ${canopyH || "2"} m, cover < ${canopyPct || "50"}%, wetland buffer ${wetland || "150"} ft…\n`);
+                  ` — slope ≤ ${slope || "30"}%, canopy ≥ ${canopyH || "2"} m, cover < ${canopyPct || "50"}%, wetland buffer ${wetland || "150"} ft, min patch ${minPatch || "1"} ac…\n`);
 
         // POST /run via bouncer
         let jobId;
