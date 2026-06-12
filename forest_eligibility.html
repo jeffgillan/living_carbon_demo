@@ -287,23 +287,23 @@
             <details class="adv-params">
                 <summary>Advanced parameters</summary>
                 <label class="param-label">Max slope (%)
-                    <span class="param-hint">Terrain up to this slope is eligible (default 30%).</span>
+                    <span class="param-hint">Terrain up to this slope is eligible (default 30%). Increasing this value may increase eligible acres. </span>
                     <input type="number" id="slope-threshold" min="0" max="100" step="1" value="30">
                 </label>
                 <label class="param-label">Min canopy height (m)
-                    <span class="param-hint">A pixel taller than this height counts as existing tree canopy (default 2 m).</span>
+                    <span class="param-hint">A pixel taller than this height counts as existing tree canopy (default 2 m). Increasing this value mayincrease eligible acres.</span>
                     <input type="number" id="canopy-height" min="0" max="100" step="0.5" value="2">
                 </label>
                 <label class="param-label">Max canopy cover (%)
-                    <span class="param-hint">Cells with more than this much canopy cover are excluded as already-forested (default 10%).</span>
+                    <span class="param-hint">Cells with more than this much canopy cover are excluded as already-forested (default 10%). Increasing this value may increaseeligible acres.</span>
                     <input type="number" id="canopy-pct" min="0" max="100" step="1" value="10">
                 </label>
                 <label class="param-label">Wetland buffer (ft)
-                    <span class="param-hint">Wetland areas plus this buffer are excluded (default 150 ft).</span>
+                    <span class="param-hint">Wetland areas plus this buffer are excluded (default 150 ft). Increasing this value may decrease eligible acres.</span>
                     <input type="number" id="wetland-buffer" min="0" max="5000" step="10" value="150">
                 </label>
                 <label class="param-label">Minimum patch size (acres)
-                    <span class="param-hint">Eligible patches smaller than this are dropped from the final result (default 1 ac).</span>
+                    <span class="param-hint">Eligible patches smaller than this are dropped from the final result (default 1 ac). Increasing this value may decrease eligible acres.</span>
                     <input type="number" id="min-patch" min="0" max="1000" step="0.5" value="1">
                 </label>
             </details>
